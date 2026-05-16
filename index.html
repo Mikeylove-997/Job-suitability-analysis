@@ -122,7 +122,7 @@ const crd = { background: C.card, border: `1px solid ${C.border}`, borderRadius:
 const foc = (e) => (e.target.style.borderColor = C.borderActive);
 const blr = (e) => (e.target.style.borderColor = C.border);
 
-// ─── Shared Tabs Navigation ───
+// ─── Tabs Nav ───
 function TabNav({ active, onChange, resumeCount }) {
   const tabs = [
     { id: "resumes", label: `Resumes${resumeCount > 0 ? ` (${resumeCount})` : ""}`, icon: <I.FileText /> },
@@ -326,7 +326,7 @@ function ResumeManager({ resumes, onUpdate, onGoToMatcher }) {
 }
 
 // ════════════════════════════════════════
-// MODULE 1: MATCHER
+// MODULE 1: MATCHER (Gemini Dynamic Connection)
 // ════════════════════════════════════════
 function MatcherModule({ resumes, onSaveApp, apiKey }) {
   const [jd, setJd] = useState("");
@@ -606,7 +606,7 @@ function TrackerModule({ applications, setApplications, resumes, onSave }) {
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 4, flexShrink: 0 }}>
                   {app.url && <a href={app.url} target="_blank" rel="noopener noreferrer" style={{ ...gb, textDecoration: "none" }}><I.ExtLink /></a>}
-                  <button onClick={() => handleEdit(app)} style={gb}><I.Edit /></button>
+                  <button onClick={handleEdit(app)} style={gb}><I.Edit /></button>
                   <button onClick={() => del(app.id)} style={{ ...gb, color: C.red }}><I.Trash /></button>
                 </div>
               </div>
@@ -618,9 +618,7 @@ function TrackerModule({ applications, setApplications, resumes, onSave }) {
   );
 }
 
-// ════════════════════════════════════════
-// MODULE 3: ANALYTICS
-// ════════════════════════════════════════
+// ─── Analytics Module ───
 function AnalyticsModule({ applications, resumes }) {
   const counts = {}; Object.keys(STATUS_CONFIG).forEach((k) => (counts[k] = 0)); applications.forEach((a) => counts[a.status]++);
   const total = applications.length;
@@ -715,7 +713,7 @@ function AnalyticsModule({ applications, resumes }) {
 }
 
 // ════════════════════════════════════════
-// MAIN APP COMPONENT
+// MAIN APP NAVIGATION
 // ════════════════════════════════════════
 function App() {
   const [tab, setTab] = useState("resumes");
@@ -753,14 +751,14 @@ function App() {
   return (
     <div style={{ fontFamily: font, background: C.bg, minHeight: "100vh", color: C.text, padding: "24px 20px", maxWidth: 860, margin: "0 auto", boxSizing: "border-box" }}>
       
-      {/* Secure API Configuration Ribbon */}
+      {/* Dynamic API Configuration Ribbon */}
       {showKeyBar && (
         <div style={{ ...crd, padding: "12px 16px", borderColor: apiKey ? C.green + "33" : C.amber + "33", background: C.surface, marginBottom: 20, display: "flex", flexWrap: "wrap", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
           <div style={{ display: "flex", flexDirection: "column" }}>
             <span style={{ fontSize: 12, fontWeight: 600, color: apiKey ? C.green : C.amber }}>
               {apiKey ? "✓ Gemini AI Connected" : "⚠️ API Configuration Required"}
             </span>
-            <span style={{ fontSize: 11, color: C.textDim }}>Provide a Gemini API Key to run calculations. Key stays entirely in your browser memory.</span>
+            <span style={{ fontSize: 11, color: C.textDim }}>Provide a Gemini API Key to run calculations. Key stays entirely in your browser.</span>
           </div>
           <div style={{ display: "flex", gap: 8, flex: "1 1 300px" }}>
             <input 
@@ -794,7 +792,6 @@ function App() {
   );
 }
 
-// ─── Mount ───
 const root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(<App />);
   </script>
