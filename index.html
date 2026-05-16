@@ -22,7 +22,7 @@
 <body>
   <div id="root"></div>
   <script type="text/babel">
-// ─── localStorage wrapper (replaces Claude artifact storage) ───
+// ─── localStorage wrapper ───
 async function localGet(key) {
   const val = localStorage.getItem(key);
   return val ? { value: val } : null;
@@ -60,19 +60,35 @@ const VERDICT_CONFIG = {
   skip: { label: "Skip", emoji: "⏭️", color: C.red, bg: C.redGlow, border: "rgba(239,68,68,0.3)", desc: "Weak fit — your time is better spent on closer matches." },
 };
 
-// ─── Storage ───
+// ─── Storage Keys ───
 const SK = "job-cmd-center-v4";
+const KEY_SK = "job-cmd-center-gemini-key";
+
 async function loadData() { try { const r = await localGet(SK); return r ? JSON.parse(r.value) : null; } catch { return null; } }
 async function saveData(d) { try { await localSet(SK, JSON.stringify(d)); } catch (e) { console.error("Save:", e); } }
 
-// ─── Claude API ───
-async function callClaude(sys, usr) {
-  const r = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 1024, system: sys, messages: [{ role: "user", content: usr }] }),
+// ─── Direct Browser Connection to Gemini AI ───
+async function callGemini(sys, usr, apiKey) {
+  if (!apiKey) throw new Error("Please configure your Gemini API Key first.");
+  
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+  
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      systemInstruction: { parts: [{ text: sys }] },
+      contents: [{ parts: [{ text: usr }] }],
+      generationConfig: { 
+        responseMimeType: "application/json",
+        temperature: 0.1
+      }
+    }),
   });
-  const d = await r.json();
-  return d.content?.map((b) => (b.type === "text" ? b.text : "")).join("") || "";
+  
+  const d = await response.json();
+  if (d.error) throw new Error(d.error.message);
+  return d.candidates?.[0]?.content?.parts?.[0]?.text || "";
 }
 
 // ─── Icons ───
@@ -106,7 +122,7 @@ const crd = { background: C.card, border: `1px solid ${C.border}`, borderRadius:
 const foc = (e) => (e.target.style.borderColor = C.borderActive);
 const blr = (e) => (e.target.style.borderColor = C.border);
 
-// ─── Shared ───
+// ─── Shared Tabs Navigation ───
 function TabNav({ active, onChange, resumeCount }) {
   const tabs = [
     { id: "resumes", label: `Resumes${resumeCount > 0 ? ` (${resumeCount})` : ""}`, icon: <I.FileText /> },
@@ -167,7 +183,7 @@ function VerdictBanner({ verdict }) {
 }
 
 // ════════════════════════════════════════
-// MODULE 0: RESUME MANAGER (public — upload your own)
+// MODULE 0: RESUME MANAGER
 // ════════════════════════════════════════
 function ResumeManager({ resumes, onUpdate, onGoToMatcher }) {
   const [expandedId, setExpandedId] = useState(null);
@@ -205,7 +221,6 @@ function ResumeManager({ resumes, onUpdate, onGoToMatcher }) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      {/* Onboarding card when empty */}
       {resumes.length === 0 && !showAdd && (
         <div style={{ ...crd, textAlign: "center", padding: "48px 24px", borderColor: C.borderActive, background: C.accentGlow }}>
           <div style={{ fontSize: 36, marginBottom: 12 }}>📄</div>
@@ -217,7 +232,6 @@ function ResumeManager({ resumes, onUpdate, onGoToMatcher }) {
         </div>
       )}
 
-      {/* Header controls */}
       {resumes.length > 0 && (
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
           <div>
@@ -237,7 +251,6 @@ function ResumeManager({ resumes, onUpdate, onGoToMatcher }) {
         </div>
       )}
 
-      {/* Add form */}
       {showAdd && !atLimit && (
         <div style={{ ...crd, borderColor: C.green }}>
           <h3 style={{ margin: "0 0 4px", fontSize: 14, fontWeight: 600, color: C.green, fontFamily: font }}>
@@ -262,7 +275,6 @@ function ResumeManager({ resumes, onUpdate, onGoToMatcher }) {
         </div>
       )}
 
-      {/* Resume list */}
       {resumes.map((r) => {
         const isExp = expandedId === r.id, isEd = editingId === r.id;
         return (
@@ -314,9 +326,9 @@ function ResumeManager({ resumes, onUpdate, onGoToMatcher }) {
 }
 
 // ════════════════════════════════════════
-// MODULE 1: MATCHER (with suitability verdict)
+// MODULE 1: MATCHER
 // ════════════════════════════════════════
-function MatcherModule({ resumes, onSaveApp }) {
+function MatcherModule({ resumes, onSaveApp, apiKey }) {
   const [jd, setJd] = useState("");
   const [title, setTitle] = useState("");
   const [co, setCo] = useState("");
@@ -329,41 +341,48 @@ function MatcherModule({ resumes, onSaveApp }) {
 
   const runMatch = async () => {
     if (!jd.trim() || resumes.length === 0) return;
+    if (!apiKey) {
+      alert("Please provide a Gemini API key in the configuration bar at the top of the page first!");
+      return;
+    }
     setLoading(true); setResult(null); setCover(null);
-    const summaries = resumes.map((r) => `[${r.id}] ${r.label}:\nKeywords: ${r.keywords.join(", ")}\n${r.content.substring(0, 500)}`).join("\n---\n");
+    const summaries = resumes.map((r) => `[${r.id}] ${r.label}:\nKeywords: ${r.keywords.join(", ")}\n${r.content.substring(0, 1500)}`).join("\n---\n");
     try {
-      const raw = await callClaude(
-        `You are a career advisor and resume-to-JD matching expert. Your job is to help job seekers decide whether a role is worth applying to, and which resume version to use.
-
-Analyze the fit between the candidate's resumes and the job description. Return ONLY valid JSON (no markdown fences, no preamble, no explanation) in this exact format:
-
+      const raw = await callGemini(
+        `You are a career advisor and resume-to-JD matching expert. Help job seekers decide whether a role is worth applying to, and which resume version to use.
+Analyze the fit between the candidate's resumes and the job description. Return ONLY valid, raw JSON matches with no markdown wrapping fences or conversational preamble in this exact layout:
 {"verdict":"apply|consider|skip","verdict_reasoning":"1-2 sentences explaining the recommendation in second person (use 'you/your')","rankings":[{"id":"resume-id","label":"Resume Label","score":85,"strengths":["strength1","strength2"],"gaps":["gap1"]}],"top_pick":"resume-id","jd_summary":"2 sentence summary of what the role needs","key_requirements":["req1","req2","req3","req4","req5"],"matching_skills":["skill1","skill2","skill3"],"missing_skills":["skill1","skill2"]}
 
 SCORING RULES:
 - 75-100 = Strong fit → verdict "apply"
 - 50-74 = Partial fit → verdict "consider"  
 - 0-49 = Weak fit → verdict "skip"
-- Be HONEST. Don't inflate scores. A 60 is a 60, not a 75.
-- The verdict is based on the TOP-SCORING resume only.
-
-Return top 5 matches (or fewer if less than 5 resumes). Score 0-100.`,
-        `RESUMES:\n${summaries}\n\nJOB DESCRIPTION:\nTitle: ${title || "Not specified"}\nCompany: ${co || "Not specified"}\n${jd}`
+- The verdict is based on the TOP-SCORING resume only. Return top 5 matches max.`,
+        `RESUMES:\n${summaries}\n\nJOB DESCRIPTION:\nTitle: ${title || "Not specified"}\nCompany: ${co || "Not specified"}\n${jd}`,
+        apiKey
       );
+      
       setResult(JSON.parse(raw.replace(/```json|```/g, "").trim()));
-    } catch { setResult({ error: "Failed to parse results. Please try again." }); }
+    } catch (e) { 
+      setResult({ error: `Analysis failed: ${e.message}. Double check your API Key settings.` }); 
+    }
     setLoading(false);
   };
 
   const genCover = async () => {
-    if (!result?.top_pick) return;
+    if (!result?.top_pick || !apiKey) return;
     setCoverLoading(true);
     const top = resumes.find((r) => r.id === result.top_pick);
     try {
-      setCover(await callClaude(
-        `Write a concise, specific cover letter (250-300 words). No generic phrases. Match the candidate's actual experience to the role's requirements. Return ONLY the letter text, no markdown.`,
-        `RESUME:\n${top?.content}\n\nJOB:\nTitle: ${title}\nCompany: ${co}\n${jd}\n\nKey requirements: ${result.key_requirements?.join(", ")}\nMatching skills: ${result.matching_skills?.join(", ")}`
-      ));
-    } catch { setCover("Failed to generate. Try again."); }
+      const rawText = await callGemini(
+        `Write a concise, specific cover letter (250-300 words). No generic buzz phrases. Match the candidate's actual experience directly to the role requirements. Return ONLY the letter text, no markdown styling or wrapping JSON containers.`,
+        `RESUME:\n${top?.content}\n\nJOB:\nTitle: ${title}\nCompany: ${co}\n${jd}\n\nKey requirements: ${result.key_requirements?.join(", ")}\nMatching skills: ${result.matching_skills?.join(", ")}`,
+        apiKey
+      );
+      setCover(rawText);
+    } catch (e) { 
+      setCover(`Failed to generate cover letter: ${e.message}`); 
+    }
     setCoverLoading(false);
   };
 
@@ -402,20 +421,16 @@ Return top 5 matches (or fewer if less than 5 resumes). Score 0-100.`,
         </div>
       </div>
 
-      {/* Results with verdict */}
       {result && !result.error && (
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-          {/* Verdict banner */}
           <VerdictBanner verdict={result.verdict} />
 
-          {/* Verdict reasoning */}
           {result.verdict_reasoning && (
             <div style={{ ...crd, padding: 16 }}>
               <p style={{ margin: 0, fontSize: 13, color: C.text, fontFamily: font, lineHeight: 1.7 }}>{result.verdict_reasoning}</p>
             </div>
           )}
 
-          {/* Skills match overview */}
           {(result.matching_skills?.length > 0 || result.missing_skills?.length > 0) && (
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
               {result.matching_skills?.length > 0 && (
@@ -437,7 +452,6 @@ Return top 5 matches (or fewer if less than 5 resumes). Score 0-100.`,
             </div>
           )}
 
-          {/* Resume rankings */}
           <div style={crd}>
             <h3 style={{ margin: "0 0 12px", fontSize: 14, fontWeight: 600, color: C.text, fontFamily: font }}>Resume rankings</h3>
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -465,7 +479,6 @@ Return top 5 matches (or fewer if less than 5 resumes). Score 0-100.`,
             </div>
           </div>
 
-          {/* Action buttons */}
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
             <button onClick={save} style={{ ...pb, background: C.green }}><I.Plus /> Save to tracker</button>
             <button onClick={genCover} disabled={coverLoading} style={{ ...pb, background: C.purple, opacity: coverLoading ? 0.5 : 1 }}>
@@ -633,7 +646,6 @@ function AnalyticsModule({ applications, resumes }) {
         ))}
       </div>
 
-      {/* Verdict breakdown */}
       {(vcounts.apply + vcounts.consider + vcounts.skip) > 0 && (
         <div style={crd}>
           <h3 style={{ margin: "0 0 14px", fontSize: 13, fontWeight: 600, color: C.textDim, fontFamily: font, textTransform: "uppercase", letterSpacing: "0.05em" }}>AI Verdicts</h3>
@@ -703,15 +715,33 @@ function AnalyticsModule({ applications, resumes }) {
 }
 
 // ════════════════════════════════════════
-// MAIN APP
+// MAIN APP COMPONENT
 // ════════════════════════════════════════
 function App() {
   const [tab, setTab] = useState("resumes");
   const [apps, setApps] = useState([]);
   const [resumes, setResumes] = useState([]);
+  const [apiKey, setApiKey] = useState("");
   const [loaded, setLoaded] = useState(false);
+  const [showKeyBar, setShowKeyBar] = useState(true);
 
-  useEffect(() => { (async () => { const d = await loadData(); if (d?.applications) setApps(d.applications); if (d?.resumes) setResumes(d.resumes); setLoaded(true); })(); }, []);
+  useEffect(() => { 
+    (async () => { 
+      const d = await loadData(); 
+      if (d?.applications) setApps(d.applications); 
+      if (d?.resumes) setResumes(d.resumes); 
+      
+      const savedKey = localStorage.getItem(KEY_SK);
+      if (savedKey) setApiKey(savedKey);
+      
+      setLoaded(true); 
+    })(); 
+  }, []);
+
+  const handleSaveKey = (key) => {
+    setApiKey(key);
+    localStorage.setItem(KEY_SK, key);
+  };
 
   const persist = useCallback(async (a, r) => { await saveData({ applications: a, resumes: r }); }, []);
   const persistApps = useCallback(async (a) => { setApps(a); await persist(a, resumes); }, [resumes, persist]);
@@ -722,16 +752,42 @@ function App() {
 
   return (
     <div style={{ fontFamily: font, background: C.bg, minHeight: "100vh", color: C.text, padding: "24px 20px", maxWidth: 860, margin: "0 auto", boxSizing: "border-box" }}>
-      <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
-      <div style={{ marginBottom: 24 }}>
-        <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, letterSpacing: "-0.02em", background: "linear-gradient(135deg, #e2e8f0, #3b82f6)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>Job Search Command Center</h1>
-        <p style={{ margin: "4px 0 0", fontSize: 12, color: C.textDim }}>
-          Upload your resumes · paste a JD · get a verdict · track everything
-        </p>
+      
+      {/* Secure API Configuration Ribbon */}
+      {showKeyBar && (
+        <div style={{ ...crd, padding: "12px 16px", borderColor: apiKey ? C.green + "33" : C.amber + "33", background: C.surface, marginBottom: 20, display: "flex", flexWrap: "wrap", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+          <div style={{ display: "flex", flexDirection: "column" }}>
+            <span style={{ fontSize: 12, fontWeight: 600, color: apiKey ? C.green : C.amber }}>
+              {apiKey ? "✓ Gemini AI Connected" : "⚠️ API Configuration Required"}
+            </span>
+            <span style={{ fontSize: 11, color: C.textDim }}>Provide a Gemini API Key to run calculations. Key stays entirely in your browser memory.</span>
+          </div>
+          <div style={{ display: "flex", gap: 8, flex: "1 1 300px" }}>
+            <input 
+              type="password" 
+              placeholder="Paste Google Gemini API Key..." 
+              value={apiKey} 
+              onChange={(e) => handleSaveKey(e.target.value)} 
+              style={{ ...inp, padding: "6px 10px", fontSize: 12 }} 
+            />
+            <button onClick={() => setShowKeyBar(false)} style={{ ...gb, fontSize: 11 }}>Hide</button>
+          </div>
+        </div>
+      )}
+
+      <div style={{ marginBottom: 24, display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+        <div>
+          <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, letterSpacing: "-0.02em", background: "linear-gradient(135deg, #e2e8f0, #3b82f6)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>Job Search Command Center</h1>
+          <p style={{ margin: "4px 0 0", fontSize: 12, color: C.textDim }}>
+            Upload your resumes · paste a JD · get a verdict · track everything
+          </p>
+        </div>
+        {!showKeyBar && <button onClick={() => setShowKeyBar(true)} style={{ ...gb, fontSize: 11, background: C.surface }}>⚙️ API Settings</button>}
       </div>
+
       <TabNav active={tab} onChange={setTab} resumeCount={resumes.length} />
       {tab === "resumes" && <ResumeManager resumes={resumes} onUpdate={persistResumes} onGoToMatcher={() => setTab("matcher")} />}
-      {tab === "matcher" && <MatcherModule resumes={resumes} onSaveApp={saveFromMatcher} />}
+      {tab === "matcher" && <MatcherModule resumes={resumes} onSaveApp={saveFromMatcher} apiKey={apiKey} />}
       {tab === "tracker" && <TrackerModule applications={apps} setApplications={setApps} resumes={resumes} onSave={persistApps} />}
       {tab === "analytics" && <AnalyticsModule applications={apps} resumes={resumes} />}
     </div>
