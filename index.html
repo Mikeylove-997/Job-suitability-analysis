@@ -12,7 +12,7 @@
     select option { background: #111827; color: #e2e8f0; }
     textarea::-webkit-scrollbar, div::-webkit-scrollbar { width: 6px; }
     textarea::-webkit-scrollbar-track, div::-webkit-scrollbar-track { background: transparent; }
-    textarea::-webkit-scrollbar-thumb, div::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 3px; }
+    textarea::-webkit-scrollbar-thumb, div::-webkit-scrollbar-track { background: #1e293b; border-radius: 3px; }
     textarea::-webkit-scrollbar-thumb:hover, div::-webkit-scrollbar-thumb:hover { background: #334155; }
   </style>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
@@ -32,7 +32,7 @@ async function localSet(key, value) {
   return { key, value };
 }
 
-const { useState, useEffect, useCallback } = React;
+const { useState, useEffect, useCallback, useMemo } = React;
 
 // ─── Colors ───
 const C = {
@@ -153,7 +153,7 @@ function StatusBadge({ status }) {
 }
 
 function ScoreRing({ score, size = 48 }) {
-  const r = (size - 6) / 2, circ = 2 * Math.PI * r, off = circ * (1 - score / 100);
+  const r = (size - 6) / 2, circ = 2 * Math.PI * r, off = circ * (1 - (score || 0) / 100);
   const col = score >= 75 ? C.green : score >= 50 ? C.amber : C.red;
   return (
     <div style={{ position: "relative", width: size, height: size, flexShrink: 0 }}>
@@ -161,7 +161,7 @@ function ScoreRing({ score, size = 48 }) {
         <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={C.border} strokeWidth={3} />
         <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={col} strokeWidth={3} strokeDasharray={circ} strokeDashoffset={off} strokeLinecap="round" style={{ transition: "stroke-dashoffset .6s ease" }} />
       </svg>
-      <span style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700, fontFamily: mono, color: col }}>{score}</span>
+      <span style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700, fontFamily: mono, color: col }}>{score || 0}</span>
     </div>
   );
 }
@@ -504,296 +504,228 @@ SCORING RULES:
 }
 
 // ════════════════════════════════════════
-// MODULE 2: TRACKER
+// MODULE 2: TRACKER (Fixed Infinite Loop)
 // ════════════════════════════════════════
-function TrackerModule({ applications, setApplications, resumes, onSave }) {
-  const [showForm, setShowForm] = useState(false);
-  const [editId, setEditId] = useState(null);
-  const [filter, setFilter] = useState("all");
-  const [searchQ, setSearchQ] = useState("");
-  const empty = { jobTitle: "", company: "", url: "", status: "saved", notes: "", hiringManager: "", linkedinUrl: "", matchScore: null, bestResume: null, verdict: null };
-  const [form, setForm] = useState(empty);
-  const reset = () => { setForm(empty); setEditId(null); setShowForm(false); };
+function TrackerModule({ jobs, onUpdateJob, onDeleteJob }) {
+  const [expandedId, setExpandedId] = useState(null);
 
-  const handleSave = () => {
-    if (!form.jobTitle.trim()) return;
-    const updated = editId
-      ? applications.map((a) => a.id === editId ? { ...a, ...form } : a)
-      : [{ ...form, id: Date.now().toString(), dateAdded: new Date().toISOString(), dateApplied: form.status === "applied" ? new Date().toISOString() : null }, ...applications];
-    setApplications(updated); onSave(updated); reset();
-  };
-
-  const handleEdit = (a) => {
-    setForm({ jobTitle: a.jobTitle, company: a.company, url: a.url || "", status: a.status, notes: a.notes || "", hiringManager: a.hiringManager || "", linkedinUrl: a.linkedinUrl || "", matchScore: a.matchScore, bestResume: a.bestResume, verdict: a.verdict });
-    setEditId(a.id); setShowForm(true);
-  };
-
-  const del = (id) => { const u = applications.filter((a) => a.id !== id); setApplications(u); onSave(u); };
-  const setSt = (id, s) => { const u = applications.map((a) => a.id !== id ? a : { ...a, status: s, dateApplied: s === "applied" && !a.dateApplied ? new Date().toISOString() : a.dateApplied }); setApplications(u); onSave(u); };
-
-  const filtered = applications.filter((a) => {
-    if (filter !== "all" && a.status !== filter) return false;
-    if (searchQ) { const q = searchQ.toLowerCase(); return a.jobTitle?.toLowerCase().includes(q) || a.company?.toLowerCase().includes(q); }
-    return true;
-  });
+  if (!jobs || jobs.length === 0) {
+    return (
+      <div style={{ ...crd, textAlign: "center", padding: "48px 24px" }}>
+        <div style={{ fontSize: 36, marginBottom: 12 }}>💼</div>
+        <h3 style={{ margin: "0 0 8px", fontSize: 16, fontWeight: 600, color: C.text, fontFamily: font }}>Your pipeline is empty</h3>
+        <p style={{ margin: 0, fontSize: 13, color: C.textMuted, fontFamily: font }}>Analyze job descriptions in the <strong>Matcher</strong> tab and save them to track your status here.</p>
+      </div>
+    );
+  }
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-        <div style={{ position: "relative", flex: 1, minWidth: 200 }}>
-          <span style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: C.textDim }}><I.Search /></span>
-          <input placeholder="Search..." value={searchQ} onChange={(e) => setSearchQ(e.target.value)} style={{ ...inp, paddingLeft: 32 }} />
-        </div>
-        <select value={filter} onChange={(e) => setFilter(e.target.value)} style={{ ...inp, width: "auto", minWidth: 120, cursor: "pointer" }}>
-          <option value="all">All Status</option>
-          {Object.entries(STATUS_CONFIG).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
-        </select>
-        <button onClick={() => { reset(); setShowForm(true); }} style={pb}><I.Plus /> Add</button>
-      </div>
-
-      {showForm && (
-        <div style={{ ...crd, borderColor: C.borderActive }}>
-          <h3 style={{ margin: "0 0 14px", fontSize: 14, fontWeight: 600, color: C.text, fontFamily: font }}>{editId ? "Edit" : "New"} application</h3>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>
-            <input placeholder="Job Title *" value={form.jobTitle} onChange={(e) => setForm({ ...form, jobTitle: e.target.value })} style={inp} />
-            <input placeholder="Company *" value={form.company} onChange={(e) => setForm({ ...form, company: e.target.value })} style={inp} />
-            <input placeholder="Job URL" value={form.url} onChange={(e) => setForm({ ...form, url: e.target.value })} style={inp} />
-            <input placeholder="Hiring Manager" value={form.hiringManager} onChange={(e) => setForm({ ...form, hiringManager: e.target.value })} style={inp} />
-            <input placeholder="LinkedIn URL" value={form.linkedinUrl} onChange={(e) => setForm({ ...form, linkedinUrl: e.target.value })} style={inp} />
-            <select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })} style={{ ...inp, cursor: "pointer" }}>
-              {Object.entries(STATUS_CONFIG).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
-            </select>
-          </div>
-          <textarea placeholder="Notes" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} style={{ ...ta, minHeight: 60, marginBottom: 10 }} />
-          <div style={{ display: "flex", gap: 8 }}>
-            <button onClick={handleSave} style={pb}>{editId ? "Update" : "Save"}</button>
-            <button onClick={reset} style={gb}>Cancel</button>
-          </div>
-        </div>
-      )}
-
-      {filtered.length === 0 ? (
-        <div style={{ ...crd, textAlign: "center", padding: 40 }}><p style={{ color: C.textDim, fontSize: 13, fontFamily: font, margin: 0 }}>{applications.length === 0 ? "No applications yet. Use the Matcher to evaluate jobs, or add manually." : "No match for filter."}</p></div>
-      ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {filtered.map((app) => {
-            const vc = app.verdict ? VERDICT_CONFIG[app.verdict] : null;
-            return (
-              <div key={app.id} style={{ ...crd, padding: 14, display: "flex", alignItems: "flex-start", gap: 14 }}>
-                {app.matchScore && <ScoreRing score={app.matchScore} size={40} />}
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
-                    <span style={{ fontSize: 14, fontWeight: 600, color: C.text, fontFamily: font }}>{app.jobTitle}</span>
-                    <span style={{ fontSize: 12, color: C.textMuted, fontFamily: font }}>@ {app.company}</span>
-                    <StatusBadge status={app.status} />
-                    {vc && <span style={{ fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 4, color: vc.color, background: vc.bg, fontFamily: font }}>{vc.emoji} {vc.label}</span>}
-                  </div>
-                  <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 4 }}>
-                    {app.bestResume && <span style={{ fontSize: 11, color: C.accent, fontFamily: font }}>Resume: {resumes.find((r) => r.id === app.bestResume)?.label || app.bestResume}</span>}
-                    {app.hiringManager && <span style={{ fontSize: 11, color: C.textDim, fontFamily: font }}>HM: {app.hiringManager}</span>}
-                    {app.dateAdded && <span style={{ fontSize: 11, color: C.textDim, fontFamily: font }}>{new Date(app.dateAdded).toLocaleDateString()}</span>}
-                  </div>
-                  {app.notes && <p style={{ margin: 0, fontSize: 12, color: C.textDim, fontFamily: font, lineHeight: 1.5 }}>{app.notes}</p>}
-                  <div style={{ display: "flex", gap: 4, marginTop: 8, flexWrap: "wrap" }}>
-                    {Object.entries(STATUS_CONFIG).map(([k, v]) => (
-                      <button key={k} onClick={() => setSt(app.id, k)} style={{
-                        ...gb, fontSize: 11, padding: "3px 8px", borderRadius: 4,
-                        background: app.status === k ? v.bg : "transparent", color: app.status === k ? v.color : C.textDim,
-                        border: `1px solid ${app.status === k ? v.color + "33" : "transparent"}`,
-                      }}>{v.label}</button>
-                    ))}
-                  </div>
-                </div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 4, flexShrink: 0 }}>
-                  {app.url && <a href={app.url} target="_blank" rel="noopener noreferrer" style={{ ...gb, textDecoration: "none" }}><I.ExtLink /></a>}
-                  <button onClick={handleEdit(app)} style={gb}><I.Edit /></button>
-                  <button onClick={() => del(app.id)} style={{ ...gb, color: C.red }}><I.Trash /></button>
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      {jobs.map((j) => {
+        const isExp = expandedId === j.id;
+        return (
+          <div key={j.id} style={{ ...crd, padding: 0, overflow: "hidden" }}>
+            <div onClick={() => setExpandedId(isExp ? null : j.id)} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 16px", cursor: "pointer" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 12, flex: 1, minWidth: 0 }}>
+                {isExp ? <I.Up /> : <I.Down />}
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 14, fontWeight: 600, color: C.text, fontFamily: font, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{j.jobTitle}</div>
+                  <div style={{ fontSize: 12, color: C.textMuted, fontFamily: font }}>{j.company}</div>
                 </div>
               </div>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ─── Analytics Module ───
-function AnalyticsModule({ applications, resumes }) {
-  const counts = {}; Object.keys(STATUS_CONFIG).forEach((k) => (counts[k] = 0)); applications.forEach((a) => counts[a.status]++);
-  const total = applications.length;
-  const scored = applications.filter((a) => a.matchScore);
-  const avg = scored.length > 0 ? Math.round(scored.reduce((s, a) => s + a.matchScore, 0) / scored.length) : 0;
-  const vcounts = { apply: 0, consider: 0, skip: 0 }; applications.forEach((a) => { if (a.verdict && vcounts[a.verdict] !== undefined) vcounts[a.verdict]++; });
-  const topCo = {}; applications.forEach((a) => { topCo[a.company] = (topCo[a.company] || 0) + 1; });
-  const coList = Object.entries(topCo).sort((a, b) => b[1] - a[1]).slice(0, 8);
-  const resUse = {}; applications.forEach((a) => { if (a.bestResume) resUse[a.bestResume] = (resUse[a.bestResume] || 0) + 1; });
-  const resList = Object.entries(resUse).sort((a, b) => b[1] - a[1]);
-  const wd = {}; applications.forEach((a) => { const d = new Date(a.dateAdded), ws = new Date(d); ws.setDate(d.getDate() - d.getDay()); const k = ws.toISOString().slice(0, 10); wd[k] = (wd[k] || 0) + 1; });
-  const weeks = Object.entries(wd).sort((a, b) => a[0].localeCompare(b[0])).slice(-8);
-  const mw = Math.max(...weeks.map((w) => w[1]), 1);
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 10 }}>
-        {[{ l: "Total", v: total, c: C.text }, ...Object.entries(STATUS_CONFIG).map(([k, v]) => ({ l: v.label, v: counts[k], c: v.color })), { l: "Avg Score", v: avg || "—", c: C.purple }].map((x, i) => (
-          <div key={i} style={{ ...crd, padding: 14, textAlign: "center" }}>
-            <div style={{ fontSize: 22, fontWeight: 700, color: x.c, fontFamily: mono }}>{x.v}</div>
-            <div style={{ fontSize: 10, color: C.textDim, fontFamily: font, marginTop: 2, textTransform: "uppercase", letterSpacing: "0.04em" }}>{x.l}</div>
-          </div>
-        ))}
-      </div>
-
-      {(vcounts.apply + vcounts.consider + vcounts.skip) > 0 && (
-        <div style={crd}>
-          <h3 style={{ margin: "0 0 14px", fontSize: 13, fontWeight: 600, color: C.textDim, fontFamily: font, textTransform: "uppercase", letterSpacing: "0.05em" }}>AI Verdicts</h3>
-          <div style={{ display: "flex", gap: 12 }}>
-            {Object.entries(VERDICT_CONFIG).map(([k, v]) => (
-              <div key={k} style={{ flex: 1, textAlign: "center", padding: 12, borderRadius: 8, background: v.bg, border: `1px solid ${v.border}` }}>
-                <div style={{ fontSize: 20, fontWeight: 700, color: v.color, fontFamily: mono }}>{vcounts[k]}</div>
-                <div style={{ fontSize: 11, color: v.color, fontFamily: font, marginTop: 2 }}>{v.emoji} {v.label}</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 12 }} onClick={(e) => e.stopPropagation()}>
+                {j.matchScore && <ScoreRing score={j.matchScore} size={36} />}
+                <select value={j.status} onChange={(e) => onUpdateJob(j.id, { status: e.target.value })} style={{ ...inp, width: "auto", padding: "4px 8px", fontSize: 12 }}>
+                  <option value="saved">Saved</option>
+                  <option value="applied">Applied</option>
+                  <option value="interview">Interview</option>
+                  <option value="offer">Offer</option>
+                  <option value="rejected">Rejected</option>
+                </select>
+                <button onClick={() => onDeleteJob(j.id)} style={{ ...gb, color: C.red }}><I.Trash /></button>
               </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {total > 0 && (
-        <div style={crd}>
-          <h3 style={{ margin: "0 0 14px", fontSize: 13, fontWeight: 600, color: C.textDim, fontFamily: font, textTransform: "uppercase", letterSpacing: "0.05em" }}>Pipeline</h3>
-          {Object.entries(STATUS_CONFIG).map(([k, v]) => { const p = (counts[k] / total) * 100; return (
-            <div key={k} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
-              <span style={{ fontSize: 11, fontWeight: 600, color: v.color, width: 70, fontFamily: font }}>{v.label}</span>
-              <div style={{ flex: 1, height: 8, background: C.surface, borderRadius: 4, overflow: "hidden" }}>
-                <div style={{ height: "100%", width: `${p}%`, background: v.color, borderRadius: 4, minWidth: counts[k] > 0 ? 4 : 0, transition: "width .5s ease" }} />
-              </div>
-              <span style={{ fontSize: 11, color: C.textMuted, fontFamily: mono, width: 28, textAlign: "right" }}>{counts[k]}</span>
             </div>
-          ); })}
-        </div>
-      )}
-
-      {weeks.length > 0 && (
-        <div style={crd}>
-          <h3 style={{ margin: "0 0 14px", fontSize: 13, fontWeight: 600, color: C.textDim, fontFamily: font, textTransform: "uppercase", letterSpacing: "0.05em" }}>Weekly activity</h3>
-          <div style={{ display: "flex", alignItems: "flex-end", gap: 6, height: 80 }}>
-            {weeks.map(([w, c]) => (
-              <div key={w} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
-                <span style={{ fontSize: 10, fontFamily: mono, color: C.textMuted }}>{c}</span>
-                <div style={{ width: "100%", height: `${(c / mw) * 60}px`, minHeight: 4, background: C.accent, borderRadius: 3 }} />
-                <span style={{ fontSize: 9, color: C.textDim, fontFamily: mono }}>{new Date(w).toLocaleDateString("en", { month: "short", day: "numeric" })}</span>
+            
+            {isExp && (
+              <div style={{ padding: 16, borderTop: `1px solid ${C.border}`, background: C.surface }}>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+                  <div>
+                    <label style={{ display: "block", fontSize: 11, color: C.textDim, marginBottom: 4, textTransform: "uppercase" }}>Contact Person</label>
+                    <input value={j.hiringManager || ""} onChange={(e) => onUpdateJob(j.id, { hiringManager: e.target.value })} placeholder="Hiring Manager or Recruiter" style={inp} />
+                  </div>
+                  <div>
+                    <label style={{ display: "block", fontSize: 11, color: C.textDim, marginBottom: 4, textTransform: "uppercase" }}>LinkedIn Profile</label>
+                    <input value={j.linkedinUrl || ""} onChange={(e) => onUpdateJob(j.id, { linkedinUrl: e.target.value })} placeholder="Networking URL" style={inp} />
+                  </div>
+                </div>
+                <div>
+                  <label style={{ display: "block", fontSize: 11, color: C.textDim, marginBottom: 4, textTransform: "uppercase" }}>Application Notes</label>
+                  <textarea value={j.notes || ""} onChange={(e) => onUpdateJob(j.id, { notes: e.target.value })} placeholder="Interview dates, log updates, follow-up timelines..." style={{ ...ta, minHeight: 80 }} />
+                </div>
+                {j.url && (
+                  <div style={{ marginTop: 12, textAlign: "right" }}>
+                    <a href={j.url} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: C.accent, textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 4 }}>
+                      Open Original Post <I.ExtLink />
+                    </a>
+                  </div>
+                )}
               </div>
-            ))}
+            )}
           </div>
-        </div>
-      )}
-
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-        <div style={crd}>
-          <h3 style={{ margin: "0 0 12px", fontSize: 13, fontWeight: 600, color: C.textDim, fontFamily: font, textTransform: "uppercase", letterSpacing: "0.05em" }}>Resume usage</h3>
-          {resList.length === 0 ? <p style={{ color: C.textDim, fontSize: 12, margin: 0 }}>No data yet</p> :
-            resList.map(([id, c]) => <div key={id} style={{ display: "flex", justifyContent: "space-between", padding: "4px 0" }}>
-              <span style={{ fontSize: 12, color: C.textMuted, fontFamily: font }}>{resumes.find((r) => r.id === id)?.label || id}</span>
-              <span style={{ fontSize: 12, fontWeight: 600, color: C.accent, fontFamily: mono }}>{c}</span>
-            </div>)}
-        </div>
-        <div style={crd}>
-          <h3 style={{ margin: "0 0 12px", fontSize: 13, fontWeight: 600, color: C.textDim, fontFamily: font, textTransform: "uppercase", letterSpacing: "0.05em" }}>Top companies</h3>
-          {coList.length === 0 ? <p style={{ color: C.textDim, fontSize: 12, margin: 0 }}>No data yet</p> :
-            coList.map(([c, n]) => <div key={c} style={{ display: "flex", justifyContent: "space-between", padding: "4px 0" }}>
-              <span style={{ fontSize: 12, color: C.textMuted, fontFamily: font }}>{c}</span>
-              <span style={{ fontSize: 12, fontWeight: 600, color: C.green, fontFamily: mono }}>{n}</span>
-            </div>)}
-        </div>
-      </div>
-
-      {total === 0 && <div style={{ ...crd, textAlign: "center", padding: 40 }}><p style={{ color: C.textDim, fontSize: 13, fontFamily: font, margin: 0 }}>Start tracking to see analytics.</p></div>}
+        );
+      })}
     </div>
   );
 }
 
 // ════════════════════════════════════════
-// MAIN APP NAVIGATION
+// MODULE 3: ANALYTICS
+// ════════════════════════════════════════
+function AnalyticsModule({ jobs }) {
+  const stats = useMemo(() => {
+    const total = jobs.length;
+    const byStatus = { saved: 0, applied: 0, interview: 0, offer: 0, rejected: 0 };
+    let totalScore = 0, scoreCount = 0;
+    
+    jobs.forEach(j => {
+      if (byStatus[j.status] !== undefined) byStatus[j.status]++;
+      if (j.matchScore) {
+        totalScore += j.matchScore;
+        scoreCount++;
+      }
+    });
+    
+    return {
+      total,
+      ...byStatus,
+      avgScore: scoreCount > 0 ? Math.round(totalScore / scoreCount) : 0
+    };
+  }, [jobs]);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12 }}>
+        <div style={crd}>
+          <div style={{ fontSize: 12, color: C.textDim, fontFamily: font }}>Total Pipeline</div>
+          <div style={{ fontSize: 24, fontWeight: 700, color: C.text, fontFamily: mono, marginTop: 4 }}>{stats.total}</div>
+        </div>
+        <div style={crd}>
+          <div style={{ fontSize: 12, color: C.accent, fontFamily: font }}>Applied</div>
+          <div style={{ fontSize: 24, fontWeight: 700, color: C.accent, fontFamily: mono, marginTop: 4 }}>{stats.applied}</div>
+        </div>
+        <div style={crd}>
+          <div style={{ fontSize: 12, color: C.amber, fontFamily: font }}>Interviews</div>
+          <div style={{ fontSize: 24, fontWeight: 700, color: C.amber, fontFamily: mono, marginTop: 4 }}>{stats.interview}</div>
+        </div>
+        <div style={crd}>
+          <div style={{ fontSize: 12, color: C.green, fontFamily: font }}>Offers</div>
+          <div style={{ fontSize: 24, fontWeight: 700, color: C.green, fontFamily: mono, marginTop: 4 }}>{stats.offer}</div>
+        </div>
+      </div>
+      
+      <div style={{ ...crd, display: "flex", alignItems: "center", gap: 20 }}>
+        <ScoreRing score={stats.avgScore} size={64} />
+        <div>
+          <h4 style={{ margin: 0, fontSize: 15, fontWeight: 600, color: C.text, fontFamily: font }}>Average Job Suitability Match</h4>
+          <p style={{ margin: "4px 0 0", fontSize: 12, color: C.textMuted, fontFamily: font }}>This represents the average alignment score across your tracked pipeline.</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ════════════════════════════════════════
+// APPLICATION COMMAND ROOT
 // ════════════════════════════════════════
 function App() {
-  const [tab, setTab] = useState("resumes");
-  const [apps, setApps] = useState([]);
-  const [resumes, setResumes] = useState([]);
+  const [view, setView] = useState("resumes");
   const [apiKey, setApiKey] = useState("");
-  const [loaded, setLoaded] = useState(false);
-  const [showKeyBar, setShowKeyBar] = useState(true);
+  const [showKeyInput, setShowKeyInput] = useState(false);
+  const [data, setData] = useState({ resumes: [], jobs: [] });
+  const [ready, setReady] = useState(false);
 
-  useEffect(() => { 
-    (async () => { 
-      const d = await loadData(); 
-      if (d?.applications) setApps(d.applications); 
-      if (d?.resumes) setResumes(d.resumes); 
+  useEffect(() => {
+    async function init() {
+      const storedKey = localStorage.getItem(KEY_SK);
+      if (storedKey) setApiKey(storedKey);
       
-      const savedKey = localStorage.getItem(KEY_SK);
-      if (savedKey) setApiKey(savedKey);
-      
-      setLoaded(true); 
-    })(); 
-  }, []);
+      const loaded = await loadData();
+      if (loaded) {
+        setData({
+          resumes: loaded.resumes || [],
+          jobs: loaded.jobs || []
+        });
+      }
+      setReady(true);
+    }
+    init();
+  </useEffect(() => {
+    if (ready) saveData(data);
+  }, [data, ready]);
 
-  const handleSaveKey = (key) => {
-    setApiKey(key);
-    localStorage.setItem(KEY_SK, key);
+  const updateResumes = (next) => setData(prev => ({ ...prev, resumes: next }));
+  
+  const saveJob = (newJob) => setData(prev => ({ ...prev, jobs: [newJob, ...prev.jobs] }));
+  
+  const updateJob = (id, fields) => {
+    setData(prev => ({
+      ...prev,
+      jobs: prev.jobs.map(j => j.id === id ? { ...j, ...fields } : j)
+    }));
   };
 
-  const persist = useCallback(async (a, r) => { await saveData({ applications: a, resumes: r }); }, []);
-  const persistApps = useCallback(async (a) => { setApps(a); await persist(a, resumes); }, [resumes, persist]);
-  const persistResumes = useCallback(async (r) => { setResumes(r); await persist(apps, r); }, [apps, persist]);
-  const saveFromMatcher = useCallback(async (n) => { const u = [n, ...apps]; setApps(u); await persist(u, resumes); setTab("tracker"); }, [apps, resumes, persist]);
+  const deleteJob = (id) => {
+    if (confirm("Are you sure you want to remove this job from your pipeline?")) {
+      setData(prev => ({ ...prev, jobs: prev.jobs.filter(j => j.id !== id) }));
+    }
+  };
 
-  if (!loaded) return <div style={{ display: "flex", justifyContent: "center", alignItems: "center", height: "100vh", background: C.bg }}><div style={{ color: C.textMuted, fontFamily: font, fontSize: 14 }}>Loading...</div></div>;
+  const saveApiKey = (key) => {
+    const clean = key.trim();
+    setApiKey(clean);
+    localStorage.setItem(KEY_SK, clean);
+    setShowKeyInput(false);
+  };
+
+  if (!ready) return null;
 
   return (
-    <div style={{ fontFamily: font, background: C.bg, minHeight: "100vh", color: C.text, padding: "24px 20px", maxWidth: 860, margin: "0 auto", boxSizing: "border-box" }}>
-      
-      {/* Dynamic API Configuration Ribbon */}
-      {showKeyBar && (
-        <div style={{ ...crd, padding: "12px 16px", borderColor: apiKey ? C.green + "33" : C.amber + "33", background: C.surface, marginBottom: 20, display: "flex", flexWrap: "wrap", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
-          <div style={{ display: "flex", flexDirection: "column" }}>
-            <span style={{ fontSize: 12, fontWeight: 600, color: apiKey ? C.green : C.amber }}>
-              {apiKey ? "✓ Gemini AI Connected" : "⚠️ API Configuration Required"}
-            </span>
-            <span style={{ fontSize: 11, color: C.textDim }}>Provide a Gemini API Key to run calculations. Key stays entirely in your browser.</span>
-          </div>
-          <div style={{ display: "flex", gap: 8, flex: "1 1 300px" }}>
-            <input 
-              type="password" 
-              placeholder="Paste Google Gemini API Key..." 
-              value={apiKey} 
-              onChange={(e) => handleSaveKey(e.target.value)} 
-              style={{ ...inp, padding: "6px 10px", fontSize: 12 }} 
-            />
-            <button onClick={() => setShowKeyBar(false)} style={{ ...gb, fontSize: 11 }}>Hide</button>
+    <div style={{ maxWidth: 800, margin: "0 auto", padding: "24px 16px" }}>
+      <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+        <div>
+          <h1 style={{ fontSize: 20, fontWeight: 700, color: C.text, letterSpacing: "-0.02em" }}>Job Search Command Center</h1>
+          <p style={{ fontSize: 12, color: C.textMuted, marginTop: 2 }}>AI Suitability Analyzer & Pipeline Engine</p>
+        </div>
+        <button onClick={() => setShowKeyInput(!showKeyInput)} style={{ ...gb, background: apiKey ? "transparent" : C.amberGlow, color: apiKey ? C.textDim : C.amber, border: `1px solid ${apiKey ? C.border : C.amber}` }}>
+          ⚙️ {apiKey ? "API Key Configured" : "Setup Gemini Key"}
+        </button>
+      </header>
+
+      {showKeyInput && (
+        <div style={{ ...crd, borderColor: C.amber, marginBottom: 20 }}>
+          <h3 style={{ fontSize: 13, fontWeight: 600, color: C.amber, marginBottom: 4 }}>Configure Google Gemini API Key</h3>
+          <p style={{ fontSize: 12, color: C.textMuted, marginBottom: 12 }}>Your key is stored purely locally in your own browser cache and handles connections directly.</p>
+          <div style={{ display: "flex", gap: 8 }}>
+            <input type="password" placeholder="AIzaSy..." defaultValue={apiKey} id="keyInp" style={inp} />
+            <button onClick={() => saveApiKey(document.getElementById("keyInp").value)} style={{ ...pb, background: C.amber }}>Save</button>
           </div>
         </div>
       )}
 
-      <div style={{ marginBottom: 24, display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-        <div>
-          <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, letterSpacing: "-0.02em", background: "linear-gradient(135deg, #e2e8f0, #3b82f6)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>Job Search Command Center</h1>
-          <p style={{ margin: "4px 0 0", fontSize: 12, color: C.textDim }}>
-            Upload your resumes · paste a JD · get a verdict · track everything
-          </p>
-        </div>
-        {!showKeyBar && <button onClick={() => setShowKeyBar(true)} style={{ ...gb, fontSize: 11, background: C.surface }}>⚙️ API Settings</button>}
-      </div>
+      <TabNav active={view} onChange={setView} resumeCount={data.resumes.length} />
 
-      <TabNav active={tab} onChange={setTab} resumeCount={resumes.length} />
-      {tab === "resumes" && <ResumeManager resumes={resumes} onUpdate={persistResumes} onGoToMatcher={() => setTab("matcher")} />}
-      {tab === "matcher" && <MatcherModule resumes={resumes} onSaveApp={saveFromMatcher} apiKey={apiKey} />}
-      {tab === "tracker" && <TrackerModule applications={apps} setApplications={setApps} resumes={resumes} onSave={persistApps} />}
-      {tab === "analytics" && <AnalyticsModule applications={apps} resumes={resumes} />}
+      <main>
+        {view === "resumes" && <ResumeManager resumes={data.resumes} onUpdate={updateResumes} onGoToMatcher={() => setView("matcher")} />}
+        {view === "matcher" && <MatcherModule resumes={data.resumes} apiKey={apiKey} onSaveApp={saveJob} />}
+        {view === "tracker" && <TrackerModule jobs={data.jobs} onUpdateJob={updateJob} onDeleteJob={deleteJob} />}
+        {view === "analytics" && <AnalyticsModule jobs={data.jobs} />}
+      </main>
     </div>
   );
 }
 
-const root = ReactDOM.createRoot(document.getElementById('root'));
-root.render(<App />);
+const root = document.getElementById("root");
+ReactDOM.createRoot(root).render(<App />);
   </script>
 </body>
 </html>
