@@ -34,6 +34,6 @@ This application operates as a **100% serverless static app** running entirely i
 ## 🚀 Tech Stack
 
 - **Frontend Core:** React (v18)
-- **Styling UI:** Tailwind CSS Framework & Custom Dark-Mode Typography
-- **AI Brain Engine:** Google Gemini Pro / Gemini 2.5 Flash API Gateway
+- **Styling UI:** Tailwind CSS Design Paradigms & Custom Dark-Mode Typography
+- **AI Brain Engine:** Google Gemini Pro/Gemini 3.5 Flash API Gateway
 - **Data Persistence:** Browser Client LocalStorage API
