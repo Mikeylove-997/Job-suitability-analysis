@@ -87,7 +87,7 @@ async function callGemini(sys, usr, apiKey) {
       }
     }),
   });
-  
+
   const d = await response.json();
   if (d.error) throw new Error(d.error.message);
   return d.candidates?.[0]?.content?.parts?.[0]?.text || "";
