@@ -22,7 +22,7 @@
 <body>
   <div id="root"></div>
   <script type="text/babel">
-// ─── localStorage wrapper ───
+/* localStorage wrapper */
 async function localGet(key) {
   const val = localStorage.getItem(key);
   return val ? { value: val } : null;
@@ -34,7 +34,7 @@ async function localSet(key, value) {
 
 const { useState, useEffect, useCallback, useMemo } = React;
 
-// ─── Colors ───
+/* Colors */
 const C = {
   bg: "#0a0e17", surface: "#111827", surfaceHover: "#1a2234",
   card: "#151d2e", border: "#1e293b", borderActive: "#3b82f6",
@@ -60,14 +60,14 @@ const VERDICT_CONFIG = {
   skip: { label: "Skip", emoji: "⏭️", color: C.red, bg: C.redGlow, border: "rgba(239,68,68,0.3)", desc: "Weak fit — your time is better spent on closer matches." },
 };
 
-// ─── Storage Keys ───
+/* Storage Keys */
 const SK = "job-cmd-center-v4";
 const KEY_SK = "job-cmd-center-gemini-key";
 
 async function loadData() { try { const r = await localGet(SK); return r ? JSON.parse(r.value) : null; } catch { return null; } }
 async function saveData(d) { try { await localSet(SK, JSON.stringify(d)); } catch (e) { console.error("Save:", e); } }
 
-// ─── Direct Browser Connection to Gemini AI ───
+/* Direct Browser Connection to Gemini AI REST Gateway */
 async function callGemini(sys, usr, apiKey) {
   if (!apiKey) throw new Error("Please configure your Gemini API Key first.");
   
@@ -79,9 +79,8 @@ async function callGemini(sys, usr, apiKey) {
     body: JSON.stringify({
       contents: [{ 
         role: "user",
-        parts: [{ text: `${sys}\n\nUser Content:\n${usr}` }] 
+        parts: [{ text: sys + "\n\nUser Content:\n" + usr }] 
       }],
-      // Raw REST API gateway expects snake_case config keys:
       generation_config: { 
         response_mime_type: "application/json",
         temperature: 0.1
@@ -94,7 +93,7 @@ async function callGemini(sys, usr, apiKey) {
   return d.candidates?.[0]?.content?.parts?.[0]?.text || "";
 }
 
-// ─── Icons ───
+/* Icons */
 const I = {
   Search: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>,
   Plus: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M12 5v14M5 12h14"/></svg>,
@@ -113,7 +112,7 @@ const I = {
   Up: () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="m18 15-6-6-6 6"/></svg>,
 };
 
-// ─── Styles ───
+/* Styles */
 const font = "'DM Sans','Segoe UI',system-ui,sans-serif";
 const mono = "'JetBrains Mono','Fira Code',monospace";
 const bb = { fontFamily: font, fontSize: 13, fontWeight: 500, border: "none", borderRadius: 8, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 6, transition: "all .15s ease" };
@@ -125,7 +124,7 @@ const crd = { background: C.card, border: `1px solid ${C.border}`, borderRadius:
 const foc = (e) => (e.target.style.borderColor = C.borderActive);
 const blr = (e) => (e.target.style.borderColor = C.border);
 
-// ─── Tabs Nav ───
+/* Tabs Nav */
 function TabNav({ active, onChange, resumeCount }) {
   const tabs = [
     { id: "resumes", label: `Resumes${resumeCount > 0 ? ` (${resumeCount})` : ""}`, icon: <I.FileText /> },
@@ -506,225 +505,4 @@ SCORING RULES:
   );
 }
 
-// ─── TRACKER ───
-function TrackerModule({ jobs, onUpdateJob, onDeleteJob }) {
-  const [expandedId, setExpandedId] = useState(null);
-
-  if (!jobs || jobs.length === 0) {
-    return (
-      <div style={{ ...crd, textAlign: "center", padding: "48px 24px" }}>
-        <div style={{ fontSize: 36, marginBottom: 12 }}>💼</div>
-        <h3 style={{ margin: "0 0 8px", fontSize: 16, fontWeight: 600, color: C.text, fontFamily: font }}>Your pipeline is empty</h3>
-        <p style={{ margin: 0, fontSize: 13, color: C.textMuted, fontFamily: font }}>Analyze job descriptions in the <strong>Matcher</strong> tab and save them to track your status here.</p>
-      </div>
-    );
-  }
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-      {jobs.map((j) => {
-        const isExp = expandedId === j.id;
-        return (
-          <div key={j.id} style={{ ...crd, padding: 0, overflow: "hidden" }}>
-            <div onClick={() => setExpandedId(isExp ? null : j.id)} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 16px", cursor: "pointer" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 12, flex: 1, minWidth: 0 }}>
-                {isExp ? <I.Up /> : <I.Down />}
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ fontSize: 14, fontWeight: 600, color: C.text, fontFamily: font, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{j.jobTitle}</div>
-                  <div style={{ fontSize: 12, color: C.textMuted, fontFamily: font }}>{j.company}</div>
-                </div>
-              </div>
-              <div style={{ display: "flex", alignItems: "center", gap: 12 }} onClick={(e) => e.stopPropagation()}>
-                {j.matchScore && <ScoreRing score={j.matchScore} size={36} />}
-                <select value={j.status} onChange={(e) => onUpdateJob(j.id, { status: e.target.value })} style={{ ...inp, width: "auto", padding: "4px 8px", fontSize: 12 }}>
-                  <option value="saved">Saved</option>
-                  <option value="applied">Applied</option>
-                  <option value="interview">Interview</option>
-                  <option value="offer">Offer</option>
-                  <option value="rejected">Rejected</option>
-                </select>
-                <button onClick={() => onDeleteJob(j.id)} style={{ ...gb, color: C.red }}><I.Trash /></button>
-              </div>
-            </div>
-            
-            {isExp && (
-              <div style={{ padding: 16, borderTop: `1px solid ${C.border}`, background: C.surface }}>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
-                  <div>
-                    <label style={{ display: "block", fontSize: 11, color: C.textDim, marginBottom: 4, textTransform: "uppercase" }}>Contact Person</label>
-                    <input value={j.hiringManager || ""} onChange={(e) => onUpdateJob(j.id, { hiringManager: e.target.value })} placeholder="Hiring Manager or Recruiter" style={inp} />
-                  </div>
-                  <div>
-                    <label style={{ display: "block", fontSize: 11, color: C.textDim, marginBottom: 4, textTransform: "uppercase" }}>LinkedIn Profile</label>
-                    <input value={j.linkedinUrl || ""} onChange={(e) => onUpdateJob(j.id, { linkedinUrl: e.target.value })} placeholder="Networking URL" style={inp} />
-                  </div>
-                </div>
-                <div>
-                  <label style={{ display: "block", fontSize: 11, color: C.textDim, marginBottom: 4, textTransform: "uppercase" }}>Application Notes</label>
-                  <textarea value={j.notes || ""} onChange={(e) => onUpdateJob(j.id, { notes: e.target.value })} placeholder="Interview dates, log updates, follow-up timelines..." style={{ ...ta, minHeight: 80 }} />
-                </div>
-                {j.url && (
-                  <div style={{ marginTop: 12, textAlign: "right" }}>
-                    <a href={j.url} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: C.accent, textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 4 }}>
-                      Open Original Post <I.ExtLink />
-                    </a>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-// ─── ANALYTICS ───
-function AnalyticsModule({ jobs }) {
-  const stats = useMemo(() => {
-    const total = jobs.length;
-    const byStatus = { saved: 0, applied: 0, interview: 0, offer: 0, rejected: 0 };
-    let totalScore = 0, scoreCount = 0;
-    
-    jobs.forEach(j => {
-      if (byStatus[j.status] !== undefined) byStatus[j.status]++;
-      if (j.matchScore) {
-        totalScore += j.matchScore;
-        scoreCount++;
-      }
-    });
-    
-    return {
-      total,
-      ...byStatus,
-      avgScore: scoreCount > 0 ? Math.round(totalScore / scoreCount) : 0
-    };
-  }, [jobs]);
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12 }}>
-        <div style={crd}>
-          <div style={{ fontSize: 12, color: C.textDim, fontFamily: font }}>Total Pipeline</div>
-          <div style={{ fontSize: 24, fontWeight: 700, color: C.text, fontFamily: mono, marginTop: 4 }}>{stats.total}</div>
-        </div>
-        <div style={{ ...crd, borderColor: 'rgba(59,130,246,0.3)' }}>
-          <div style={{ fontSize: 12, color: C.accent, fontFamily: font }}>Applied</div>
-          <div style={{ fontSize: 24, fontWeight: 700, color: C.accent, fontFamily: mono, marginTop: 4 }}>{stats.applied}</div>
-        </div>
-        <div style={{ ...crd, borderColor: 'rgba(245,158,11,0.3)' }}>
-          <div style={{ fontSize: 12, color: C.amber, fontFamily: font }}>Interviews</div>
-          <div style={{ fontSize: 24, fontWeight: 700, color: C.amber, fontFamily: mono, marginTop: 4 }}>{stats.interview}</div>
-        </div>
-        <div style={{ ...crd, borderColor: 'rgba(16,185,129,0.3)' }}>
-          <div style={{ fontSize: 12, color: C.green, fontFamily: font }}>Offers</div>
-          <div style={{ fontSize: 24, fontWeight: 700, color: C.green, fontFamily: mono, marginTop: 4 }}>{stats.offer}</div>
-        </div>
-      </div>
-      
-      <div style={{ ...crd, display: "flex", alignItems: "center", gap: 20 }}>
-        <ScoreRing score={stats.avgScore} size={64} />
-        <div>
-          <h4 style={{ margin: 0, fontSize: 15, fontWeight: 600, color: C.text, fontFamily: font }}>Average Job Suitability Match</h4>
-          <p style={{ margin: "4px 0 0", fontSize: 12, color: C.textMuted, fontFamily: font }}>This represents the average alignment score across your tracked pipeline.</p>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── APPLICATION COMMAND ROOT ───
-function App() {
-  const [view, setView] = useState("resumes");
-  const [apiKey, setApiKey] = useState("");
-  const [showKeyInput, setShowKeyInput] = useState(false);
-  const [data, setData] = useState({ resumes: [], jobs: [] });
-  const [ready, setReady] = useState(false);
-
-  useEffect(() => {
-    async function init() {
-      const storedKey = localStorage.getItem(KEY_SK);
-      if (storedKey) setApiKey(storedKey);
-      
-      const loaded = await loadData();
-      if (loaded) {
-        setData({
-          resumes: loaded.resumes || [],
-          jobs: loaded.jobs || []
-        });
-      }
-      setReady(true);
-    }
-    init();
-  }, []);
-
-  useEffect(() => {
-    if (ready) saveData(data);
-  }, [data, ready]);
-
-  const updateResumes = (next) => setData(prev => ({ ...prev, resumes: next }));
-  
-  const saveJob = (newJob) => setData(prev => ({ ...prev, jobs: [newJob, ...prev.jobs] }));
-  
-  const updateJob = (id, fields) => {
-    setData(prev => ({
-      ...prev,
-      jobs: prev.jobs.map(j => j.id === id ? { ...j, ...fields } : j)
-    }));
-  };
-
-  const deleteJob = (id) => {
-    if (confirm("Are you sure you want to remove this job from your pipeline?")) {
-      setData(prev => ({ ...prev, jobs: prev.jobs.filter(j => j.id !== id) }));
-    }
-  };
-
-  const saveApiKey = (key) => {
-    const clean = key.trim();
-    setApiKey(clean);
-    localStorage.setItem(KEY_SK, clean);
-    setShowKeyInput(false);
-  };
-
-  if (!ready) return null;
-
-  return (
-    <div style={{ maxWidth: 800, margin: "0 auto", padding: "24px 16px" }}>
-      <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
-        <div>
-          <h1 style={{ fontSize: 20, fontWeight: 700, color: C.text, letterSpacing: "-0.02em" }}>Job Search Command Center</h1>
-          <p style={{ fontSize: 12, color: C.textMuted, marginTop: 2 }}>AI Suitability Analyzer & Pipeline Engine</p>
-        </div>
-        <button onClick={() => setShowKeyInput(!showKeyInput)} style={{ ...gb, background: apiKey ? "transparent" : C.amberGlow, color: apiKey ? C.textDim : C.amber, border: `1px solid ${apiKey ? C.border : C.amber}` }}>
-          ⚙️ {apiKey ? "API Key Configured" : "Setup Gemini Key"}
-        </button>
-      </header>
-
-      {showKeyInput && (
-        <div style={{ ...crd, borderColor: C.amber, marginBottom: 20 }}>
-          <h3 style={{ fontSize: 13, fontWeight: 600, color: C.amber, marginBottom: 4 }}>Configure Google Gemini API Key</h3>
-          <p style={{ fontSize: 12, color: C.textMuted, marginBottom: 12 }}>Your key is stored purely locally in your own browser cache and handles connections directly.</p>
-          <div style={{ display: "flex", gap: 8 }}>
-            <input type="password" placeholder="AIzaSy..." defaultValue={apiKey} id="keyInp" style={inp} />
-            <button onClick={() => saveApiKey(document.getElementById("keyInp").value)} style={{ ...pb, background: C.amber }}>Save</button>
-          </div>
-        </div>
-      )}
-
-      <TabNav active={view} onChange={setView} resumeCount={data.resumes.length} />
-
-      <main>
-        {view === "resumes" && <ResumeManager resumes={data.resumes} onUpdate={updateResumes} onGoToMatcher={() => setView("matcher")} />}
-        {view === "matcher" && <MatcherModule resumes={data.resumes} apiKey={apiKey} onSaveApp={saveJob} />}
-        {view === "tracker" && <TrackerModule jobs={data.jobs} onUpdateJob={updateJob} onDeleteJob={deleteJob} />}
-        {view === "analytics" && <AnalyticsModule jobs={data.jobs} />}
-      </main>
-    </div>
-  );
-}
-
-const root = document.getElementById("root");
-ReactDOM.createRoot(root).render(<App />);
-  </script>
-</body>
-</html>
+// ───
