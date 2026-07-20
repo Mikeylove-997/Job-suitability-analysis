@@ -1,0 +1,794 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Job Search Command Center</title>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body, #root { min-height: 100vh; }
+    body { background: #0a0e17; font-family: 'DM Sans', system-ui, sans-serif; }
+    select option { background: #111827; color: #e2e8f0; }
+    textarea::-webkit-scrollbar, div::-webkit-scrollbar { width: 6px; }
+    textarea::-webkit-scrollbar-track, div::-webkit-scrollbar-track { background: transparent; }
+    textarea::-webkit-scrollbar-thumb, div::-webkit-scrollbar-track { background: #1e293b; border-radius: 3px; }
+    textarea::-webkit-scrollbar-thumb:hover, div::-webkit-scrollbar-thumb:hover { background: #334155; }
+  </style>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+/* localStorage wrapper */
+async function localGet(key) {
+  const val = localStorage.getItem(key);
+  return val ? { value: val } : null;
+}
+async function localSet(key, value) {
+  localStorage.setItem(key, value);
+  return { key, value };
+}
+
+const { useState, useEffect, useCallback, useMemo } = React;
+
+/* Colors */
+const C = {
+  bg: "#0a0e17", surface: "#111827", surfaceHover: "#1a2234",
+  card: "#151d2e", border: "#1e293b", borderActive: "#3b82f6",
+  text: "#e2e8f0", textMuted: "#94a3b8", textDim: "#64748b",
+  accent: "#3b82f6", accentGlow: "rgba(59,130,246,0.15)",
+  green: "#10b981", greenGlow: "rgba(16,185,129,0.15)",
+  amber: "#f59e0b", amberGlow: "rgba(245,158,11,0.15)",
+  red: "#ef4444", redGlow: "rgba(239,68,68,0.15)",
+  purple: "#8b5cf6", purpleGlow: "rgba(139,92,246,0.15)",
+};
+
+const STATUS_CONFIG = {
+  saved: { label: "Saved", color: C.textDim, bg: "rgba(100,116,139,0.12)" },
+  applied: { label: "Applied", color: C.accent, bg: C.accentGlow },
+  interview: { label: "Interview", color: C.amber, bg: C.amberGlow },
+  offer: { label: "Offer", color: C.green, bg: C.greenGlow },
+  rejected: { label: "Rejected", color: C.red, bg: C.redGlow },
+};
+
+const VERDICT_CONFIG = {
+  apply: { label: "Apply", emoji: "✅", color: C.green, bg: C.greenGlow, border: "rgba(16,185,129,0.3)", desc: "Strong fit — your background aligns well with this role." },
+  consider: { label: "Consider", emoji: "🤔", color: C.amber, bg: C.amberGlow, border: "rgba(245,158,11,0.3)", desc: "Partial fit — worth applying if you can address the gaps." },
+  skip: { label: "Skip", emoji: "⏭️", color: C.red, bg: C.redGlow, border: "rgba(239,68,68,0.3)", desc: "Weak fit — your time is better spent on closer matches." },
+};
+
+/* Storage Keys */
+const SK = "job-cmd-center-v4";
+const KEY_SK = "job-cmd-center-gemini-key";
+
+async function loadData() { try { const r = await localGet(SK); return r ? JSON.parse(r.value) : null; } catch { return null; } }
+async function saveData(d) { try { await localSet(SK, JSON.stringify(d)); } catch (e) { console.error("Save:", e); } }
+
+/* Direct Browser Connection to Gemini AI REST Gateway */
+function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
+
+function isRetryableError(message) {
+  if (!message) return false;
+  const m = message.toLowerCase();
+  return m.includes("high demand") || m.includes("overloaded") || m.includes("503")
+    || m.includes("rate limit") || m.includes("429") || m.includes("try again later")
+    || m.includes("resource_exhausted") || m.includes("unavailable");
+}
+
+async function callGemini(sys, usr, apiKey, onRetry) {
+  if (!apiKey) throw new Error("Please configure your Gemini API Key first.");
+
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${apiKey}`;
+  const MAX_ATTEMPTS = 4;
+  const BASE_DELAY_MS = 1000;
+
+  let lastError;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{
+            role: "user",
+            parts: [{ text: sys + "\n\nUser Content:\n" + usr }]
+          }],
+          generationConfig: {
+            responseMimeType: "application/json",
+            temperature: 0.1
+          }
+        }),
+      });
+
+      const d = await response.json();
+      if (d.error) throw new Error(d.error.message);
+      return d.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    } catch (e) {
+      lastError = e;
+      const retryable = isRetryableError(e.message);
+      if (!retryable || attempt === MAX_ATTEMPTS) throw e;
+      const delay = BASE_DELAY_MS * Math.pow(2, attempt - 1); // 1s, 2s, 4s
+      if (onRetry) onRetry(attempt, MAX_ATTEMPTS, delay);
+      await sleep(delay);
+    }
+  }
+  throw lastError;
+}
+
+/* Icons */
+const I = {
+  Search: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>,
+  Plus: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M12 5v14M5 12h14"/></svg>,
+  Sparkle: () => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M12 3l1.5 5.5L19 10l-5.5 1.5L12 17l-1.5-5.5L5 10l5.5-1.5z"/></svg>,
+  Briefcase: () => <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/></svg>,
+  Target: () => <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>,
+  BarChart: () => <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M18 20V10M12 20V4M6 20v-6"/></svg>,
+  FileText: () => <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M16 13H8M16 17H8M10 9H8"/></svg>,
+  Upload: () => <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>,
+  Trash: () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>,
+  Edit: () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4z"/></svg>,
+  ExtLink: () => <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14 21 3"/></svg>,
+  Copy: () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>,
+  Check: () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M20 6 9 17l-5-5"/></svg>,
+  Down: () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="m6 9 6 6 6-6"/></svg>,
+  Up: () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="m18 15-6-6-6 6"/></svg>,
+};
+
+/* Styles */
+const font = "'DM Sans','Segoe UI',system-ui,sans-serif";
+const mono = "'JetBrains Mono','Fira Code',monospace";
+const bb = { fontFamily: font, fontSize: 13, fontWeight: 500, border: "none", borderRadius: 8, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 6, transition: "all .15s ease" };
+const pb = { ...bb, background: C.accent, color: "#fff", padding: "8px 16px" };
+const gb = { ...bb, background: "transparent", color: C.textMuted, padding: "6px 10px" };
+const inp = { fontFamily: font, fontSize: 13, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, color: C.text, padding: "10px 12px", outline: "none", width: "100%", boxSizing: "border-box", transition: "border-color .15s ease" };
+const ta = { ...inp, minHeight: 120, resize: "vertical", lineHeight: 1.6 };
+const crd = { background: C.card, border: `1px solid ${C.border}`, borderRadius: 12, padding: 20, transition: "all .15s ease" };
+const foc = (e) => (e.target.style.borderColor = C.borderActive);
+const blr = (e) => (e.target.style.borderColor = C.border);
+
+/* Tabs Nav */
+function TabNav({ active, onChange, resumeCount }) {
+  const tabs = [
+    { id: "resumes", label: `Resumes${resumeCount > 0 ? ` (${resumeCount})` : ""}`, icon: <I.FileText /> },
+    { id: "matcher", label: "Matcher", icon: <I.Target /> },
+    { id: "tracker", label: "Tracker", icon: <I.Briefcase /> },
+    { id: "analytics", label: "Analytics", icon: <I.BarChart /> },
+  ];
+  return (
+    <div style={{ display: "flex", gap: 4, background: C.surface, borderRadius: 10, padding: 4, marginBottom: 24 }}>
+      {tabs.map((t) => (
+        <button key={t.id} onClick={() => onChange(t.id)} style={{
+          ...bb, flex: 1, justifyContent: "center", padding: "10px 12px", borderRadius: 8, fontSize: 12,
+          fontWeight: active === t.id ? 600 : 400, background: active === t.id ? C.accent : "transparent",
+          color: active === t.id ? "#fff" : C.textMuted,
+        }}>{t.icon} {t.label}</button>
+      ))}
+    </div>
+  );
+}
+
+function StatusBadge({ status }) {
+  const c = STATUS_CONFIG[status] || STATUS_CONFIG.saved;
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "4px 10px", borderRadius: 6, fontSize: 11, fontWeight: 600, fontFamily: font, letterSpacing: "0.03em", textTransform: "uppercase", color: c.color, background: c.bg }}>
+      <span style={{ width: 6, height: 6, borderRadius: "50%", background: c.color }} />{c.label}
+    </span>
+  );
+}
+
+function ScoreRing({ score, size = 48 }) {
+  const r = (size - 6) / 2, circ = 2 * Math.PI * r, off = circ * (1 - (score || 0) / 100);
+  const col = score >= 75 ? C.green : score >= 50 ? C.amber : C.red;
+  return (
+    <div style={{ position: "relative", width: size, height: size, flexShrink: 0 }}>
+      <svg width={size} height={size} style={{ transform: "rotate(-90deg)" }}>
+        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={C.border} strokeWidth={3} />
+        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={col} strokeWidth={3} strokeDasharray={circ} strokeDashoffset={off} strokeLinecap="round" style={{ transition: "stroke-dashoffset .6s ease" }} />
+      </svg>
+      <span style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700, fontFamily: mono, color: col }}>{score || 0}</span>
+    </div>
+  );
+}
+
+function VerdictBanner({ verdict }) {
+  const v = VERDICT_CONFIG[verdict];
+  if (!v) return null;
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 18px", borderRadius: 10, background: v.bg, border: `1px solid ${v.border}`, marginBottom: 16 }}>
+      <span style={{ fontSize: 28 }}>{v.emoji}</span>
+      <div>
+        <div style={{ fontSize: 15, fontWeight: 700, color: v.color, fontFamily: font, letterSpacing: "0.02em" }}>
+          Recommendation: {v.label}
+        </div>
+        <div style={{ fontSize: 12, color: C.textMuted, fontFamily: font, marginTop: 2 }}>{v.desc}</div>
+      </div>
+    </div>
+  );
+}
+
+// ════════════════════════════════════════
+// MODULE 0: RESUME MANAGER
+// ════════════════════════════════════════
+function ResumeManager({ resumes, onUpdate, onGoToMatcher }) {
+  const [expandedId, setExpandedId] = useState(null);
+  const [editingId, setEditingId] = useState(null);
+  const [showAdd, setShowAdd] = useState(resumes.length === 0);
+  const [editForm, setEditForm] = useState({ label: "", content: "", keywords: "" });
+  const [addForm, setAddForm] = useState({ label: "", content: "", keywords: "" });
+
+  const startEdit = (r) => {
+    setEditingId(r.id);
+    setEditForm({ label: r.label, content: r.content, keywords: r.keywords.join(", ") });
+    setExpandedId(r.id);
+  };
+
+  const saveEdit = () => {
+    if (!editForm.label.trim() || !editForm.content.trim()) return;
+    onUpdate(resumes.map((r) => r.id === editingId ? {
+      ...r, label: editForm.label.trim(), content: editForm.content.trim(),
+      keywords: editForm.keywords.split(",").map((k) => k.trim()).filter(Boolean)
+    } : r));
+    setEditingId(null);
+  };
+
+  const addResume = () => {
+    if (!addForm.label.trim() || !addForm.content.trim()) return;
+    onUpdate([...resumes, {
+      id: `r-${Date.now()}`, label: addForm.label.trim(), content: addForm.content.trim(),
+      keywords: addForm.keywords.split(",").map((k) => k.trim()).filter(Boolean),
+    }]);
+    setAddForm({ label: "", content: "", keywords: "" });
+    setShowAdd(false);
+  };
+
+  const atLimit = resumes.length >= 10;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      {resumes.length === 0 && !showAdd && (
+        <div style={{ ...crd, textAlign: "center", padding: "48px 24px", borderColor: C.borderActive, background: C.accentGlow }}>
+          <div style={{ fontSize: 36, marginBottom: 12 }}>📄</div>
+          <h2 style={{ margin: "0 0 8px", fontSize: 18, fontWeight: 700, color: C.text, fontFamily: font }}>Upload your first resume</h2>
+          <p style={{ margin: "0 0 20px", fontSize: 13, color: C.textMuted, fontFamily: font, maxWidth: 400, marginLeft: "auto", marginRight: "auto", lineHeight: 1.6 }}>
+            Paste up to 10 resume versions. The AI matcher will rank them against any job description and tell you whether it's worth applying.
+          </p>
+          <button onClick={() => setShowAdd(true)} style={{ ...pb, padding: "10px 24px", fontSize: 14 }}><I.Upload /> Add your resume</button>
+        </div>
+      )}
+
+      {resumes.length > 0 && (
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+          <div>
+            <span style={{ fontSize: 14, fontWeight: 600, color: C.text, fontFamily: font }}>{resumes.length}/10 resume{resumes.length !== 1 ? "s" : ""}</span>
+            <span style={{ fontSize: 12, color: C.textDim, fontFamily: font, marginLeft: 8 }}>Click to expand · edit · manage</span>
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            {resumes.length > 0 && <button onClick={onGoToMatcher} style={{ ...pb, background: C.green }}><I.Target /> Go to Matcher</button>}
+            {!atLimit && <button onClick={() => setShowAdd(true)} style={pb}><I.Plus /> Add resume</button>}
+          </div>
+        </div>
+      )}
+
+      {atLimit && (
+        <div style={{ padding: "8px 14px", borderRadius: 8, background: C.amberGlow, border: `1px solid rgba(245,158,11,0.2)`, fontSize: 12, color: C.amber, fontFamily: font }}>
+          You've reached the 10-resume limit. Delete one to add a new version.
+        </div>
+      )}
+
+      {showAdd && !atLimit && (
+        <div style={{ ...crd, borderColor: C.green }}>
+          <h3 style={{ margin: "0 0 4px", fontSize: 14, fontWeight: 600, color: C.green, fontFamily: font }}>
+            {resumes.length === 0 ? "Add your first resume" : "Add a new resume version"}
+          </h3>
+          <p style={{ margin: "0 0 14px", fontSize: 12, color: C.textDim, fontFamily: font }}>
+            Give it a label (e.g., "Data Analyst", "PM"), paste the full text, and optionally add keywords for better matching.
+          </p>
+          <input placeholder="Resume label (e.g., 'Data Analyst — Technical')" value={addForm.label}
+            onChange={(e) => setAddForm({ ...addForm, label: e.target.value })} style={{ ...inp, marginBottom: 10 }} onFocus={foc} onBlur={blr} />
+          <textarea placeholder="Paste your full resume text here...&#10;&#10;Include skills, experience, education — everything the AI needs to match against job descriptions." value={addForm.content}
+            onChange={(e) => setAddForm({ ...addForm, content: e.target.value })} style={{ ...ta, minHeight: 180, marginBottom: 10 }} onFocus={foc} onBlur={blr} />
+          <input placeholder="Keywords (optional, comma-separated — e.g., 'python, machine learning, product')" value={addForm.keywords}
+            onChange={(e) => setAddForm({ ...addForm, keywords: e.target.value })} style={{ ...inp, marginBottom: 14 }} onFocus={foc} onBlur={blr} />
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={addResume} disabled={!addForm.label.trim() || !addForm.content.trim()}
+              style={{ ...pb, background: C.green, opacity: (!addForm.label.trim() || !addForm.content.trim()) ? 0.5 : 1 }}>
+              <I.Check /> Save resume
+            </button>
+            <button onClick={() => { setShowAdd(false); setAddForm({ label: "", content: "", keywords: "" }); }} style={gb}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {resumes.map((r) => {
+        const isExp = expandedId === r.id, isEd = editingId === r.id;
+        return (
+          <div key={r.id} style={{ ...crd, padding: 0, overflow: "hidden" }}>
+            <div onClick={() => { if (!isEd) setExpandedId(isExp ? null : r.id); }}
+              style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 16px", cursor: isEd ? "default" : "pointer" }}
+              onMouseEnter={(e) => { if (!isEd) e.currentTarget.style.background = C.surfaceHover; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flex: 1, minWidth: 0 }}>
+                {isExp ? <I.Up /> : <I.Down />}
+                <span style={{ fontSize: 13, fontWeight: 600, color: C.text, fontFamily: font }}>{r.label}</span>
+                <span style={{ fontSize: 11, color: C.textDim, fontFamily: mono }}>{r.content.length.toLocaleString()} chars</span>
+                {r.keywords.length > 0 && <span style={{ fontSize: 11, color: C.textDim, fontFamily: font }}>· {r.keywords.length} keywords</span>}
+              </div>
+              <div style={{ display: "flex", gap: 4 }} onClick={(e) => e.stopPropagation()}>
+                <button onClick={() => startEdit(r)} style={gb}><I.Edit /></button>
+                <button onClick={() => onUpdate(resumes.filter((x) => x.id !== r.id))} style={{ ...gb, color: C.red }}><I.Trash /></button>
+              </div>
+            </div>
+            {isExp && (
+              <div style={{ padding: "0 16px 16px", borderTop: `1px solid ${C.border}` }}>
+                {isEd ? (
+                  <div style={{ paddingTop: 14 }}>
+                    <input value={editForm.label} onChange={(e) => setEditForm({ ...editForm, label: e.target.value })} style={{ ...inp, marginBottom: 10, fontWeight: 600 }} onFocus={foc} onBlur={blr} />
+                    <textarea value={editForm.content} onChange={(e) => setEditForm({ ...editForm, content: e.target.value })} style={{ ...ta, minHeight: 200, marginBottom: 10 }} onFocus={foc} onBlur={blr} />
+                    <input value={editForm.keywords} onChange={(e) => setEditForm({ ...editForm, keywords: e.target.value })} placeholder="Keywords (comma-separated)" style={{ ...inp, marginBottom: 12 }} onFocus={foc} onBlur={blr} />
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <button onClick={saveEdit} style={pb}><I.Check /> Save</button>
+                      <button onClick={() => setEditingId(null)} style={gb}>Cancel</button>
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ paddingTop: 14 }}>
+                    {r.keywords.length > 0 && (
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 12 }}>
+                        {r.keywords.map((kw, i) => <span key={i} style={{ fontSize: 11, padding: "3px 8px", borderRadius: 4, background: C.accentGlow, color: C.accent, fontFamily: font, border: `1px solid rgba(59,130,246,0.2)` }}>{kw}</span>)}
+                      </div>
+                    )}
+                    <div style={{ whiteSpace: "pre-wrap", fontSize: 12, lineHeight: 1.7, color: C.textMuted, fontFamily: font, background: C.surface, padding: 14, borderRadius: 8, border: `1px solid ${C.border}`, maxHeight: 300, overflowY: "auto" }}>{r.content}</div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ════════════════════════════════════════
+// MODULE 1: MATCHER
+// ════════════════════════════════════════
+function MatcherModule({ resumes, onSaveApp, apiKey }) {
+  const [jd, setJd] = useState("");
+  const [title, setTitle] = useState("");
+  const [co, setCo] = useState("");
+  const [url, setUrl] = useState("");
+  const [result, setResult] = useState(null);
+  const [cover, setCover] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [coverLoading, setCoverLoading] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [retryStatus, setRetryStatus] = useState(null);
+
+  const runMatch = async () => {
+    if (!jd.trim() || resumes.length === 0) return;
+    if (!apiKey) {
+      alert("Please provide a Gemini API key in the configuration bar at the top of the page first!");
+      return;
+    }
+    setLoading(true); setResult(null); setCover(null); setRetryStatus(null);
+    const summaries = resumes.map((r) => `[${r.id}] ${r.label}:\nKeywords: ${r.keywords.join(", ")}\n${r.content.substring(0, 1500)}`).join("\n---\n");
+    try {
+      const raw = await callGemini(
+        `You are a career advisor and resume-to-JD matching expert. Help job seekers decide whether a role is worth applying to, and which resume version to use.
+Analyze the fit between the candidate's resumes and the job description. Return ONLY valid, raw JSON matches with no markdown wrapping fences or conversational preamble in this exact layout:
+{"verdict":"apply|consider|skip","verdict_reasoning":"1-2 sentences explaining the recommendation in second person (use 'you/your')","rankings":[{"id":"resume-id","label":"Resume Label","score":85,"strengths":["strength1","strength2"],"gaps":["gap1"]}],"top_pick":"resume-id","jd_summary":"2 sentence summary of what the role needs","key_requirements":["req1","req2","req3","req4","req5"],"matching_skills":["skill1","skill2","skill3"],"missing_skills":["skill1","skill2"]}
+
+SCORING RULES:
+- 75-100 = Strong fit → verdict "apply"
+- 50-74 = Partial fit → verdict "consider"  
+- 0-49 = Weak fit → verdict "skip"
+- The verdict is based on the TOP-SCORING resume only. Return top 5 matches max.`,
+        `RESUMES:\n${summaries}\n\nJOB DESCRIPTION:\nTitle: ${title || "Not specified"}\nCompany: ${co || "Not specified"}\n${jd}`,
+        apiKey,
+        (attempt, max, delay) => setRetryStatus(`Gemini is busy — retrying (${attempt}/${max - 1})...`)
+      );
+      
+      setResult(JSON.parse(raw.replace(/```json|```/g, "").trim()));
+    } catch (e) { 
+      setResult({ error: `Analysis failed: ${e.message}. Double check your API Key settings.` }); 
+    }
+    setRetryStatus(null);
+    setLoading(false);
+  };
+
+  const genCover = async () => {
+    if (!result?.top_pick || !apiKey) return;
+    setCoverLoading(true); setRetryStatus(null);
+    const top = resumes.find((r) => r.id === result.top_pick);
+    try {
+      const rawText = await callGemini(
+        `Write a concise, specific cover letter (250-300 words). No generic buzz phrases. Match the candidate's actual experience directly to the role requirements. Return ONLY the letter text, no markdown styling or wrapping JSON containers.`,
+        `RESUME:\n${top?.content}\n\nJOB:\nTitle: ${title}\nCompany: ${co}\n${jd}\n\nKey requirements: ${result.key_requirements?.join(", ")}\nMatching skills: ${result.matching_skills?.join(", ")}`,
+        apiKey,
+        (attempt, max, delay) => setRetryStatus(`Gemini is busy — retrying (${attempt}/${max - 1})...`)
+      );
+      setCover(rawText);
+    } catch (e) { 
+      setCover(`Failed to generate cover letter: ${e.message}`); 
+    }
+    setRetryStatus(null);
+    setCoverLoading(false);
+  };
+
+  const save = () => {
+    onSaveApp({ id: Date.now().toString(), jobTitle: title || "Untitled", company: co || "Unknown", url, jdText: jd.substring(0, 500), status: "saved", matchScore: result?.rankings?.[0]?.score || null, bestResume: result?.top_pick || null, verdict: result?.verdict || null, notes: "", hiringManager: "", linkedinUrl: "", dateAdded: new Date().toISOString(), dateApplied: null });
+    setTitle(""); setCo(""); setUrl(""); setJd(""); setResult(null); setCover(null);
+  };
+
+  const copy = async (t) => { try { await navigator.clipboard.writeText(t); setCopied(true); setTimeout(() => setCopied(false), 2000); } catch {} };
+
+  if (resumes.length === 0) return (
+    <div style={{ ...crd, textAlign: "center", padding: "48px 24px" }}>
+      <div style={{ fontSize: 36, marginBottom: 12 }}>📄</div>
+      <h3 style={{ margin: "0 0 8px", fontSize: 16, fontWeight: 600, color: C.text, fontFamily: font }}>No resumes uploaded yet</h3>
+      <p style={{ margin: 0, fontSize: 13, color: C.textMuted, fontFamily: font }}>Head to the <strong>Resumes</strong> tab to paste your first resume, then come back here to match.</p>
+    </div>
+  );
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      <div style={crd}>
+        <h3 style={{ margin: "0 0 4px", fontSize: 15, fontWeight: 600, color: C.text, fontFamily: font }}>Paste a job description</h3>
+        <p style={{ margin: "0 0 16px", fontSize: 12, color: C.textDim, fontFamily: font }}>
+          We'll analyze it against your {resumes.length} resume{resumes.length !== 1 ? "s" : ""} and tell you if it's worth applying.
+        </p>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+          <input placeholder="Job Title" value={title} onChange={(e) => setTitle(e.target.value)} style={inp} onFocus={foc} onBlur={blr} />
+          <input placeholder="Company" value={co} onChange={(e) => setCo(e.target.value)} style={inp} onFocus={foc} onBlur={blr} />
+        </div>
+        <input placeholder="Job URL (optional — saved to tracker)" value={url} onChange={(e) => setUrl(e.target.value)} style={{ ...inp, marginBottom: 12 }} onFocus={foc} onBlur={blr} />
+        <textarea placeholder="Paste the full job description here..." value={jd} onChange={(e) => setJd(e.target.value)} style={ta} onFocus={foc} onBlur={blr} />
+        <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
+          <button onClick={runMatch} disabled={loading || !jd.trim()} style={{ ...pb, opacity: loading || !jd.trim() ? 0.5 : 1 }}>
+            <I.Sparkle /> {retryStatus ? retryStatus : loading ? "Analyzing..." : "Should I apply?"}
+          </button>
+        </div>
+      </div>
+
+      {result && !result.error && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          <VerdictBanner verdict={result.verdict} />
+
+          {result.verdict_reasoning && (
+            <div style={{ ...crd, padding: 16 }}>
+              <p style={{ margin: 0, fontSize: 13, color: C.text, fontFamily: font, lineHeight: 1.7 }}>{result.verdict_reasoning}</p>
+            </div>
+          )}
+
+          {(result.matching_skills?.length > 0 || result.missing_skills?.length > 0) && (
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+              {result.matching_skills?.length > 0 && (
+                <div style={crd}>
+                  <h4 style={{ margin: "0 0 10px", fontSize: 12, fontWeight: 600, color: C.green, fontFamily: font, textTransform: "uppercase", letterSpacing: "0.05em" }}>✓ Skills you have</h4>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                    {result.matching_skills.map((s, i) => <span key={i} style={{ fontSize: 11, padding: "4px 8px", borderRadius: 4, background: C.greenGlow, color: C.green, fontFamily: font, border: `1px solid rgba(16,185,129,0.2)` }}>{s}</span>)}
+                  </div>
+                </div>
+              )}
+              {result.missing_skills?.length > 0 && (
+                <div style={crd}>
+                  <h4 style={{ margin: "0 0 10px", fontSize: 12, fontWeight: 600, color: C.red, fontFamily: font, textTransform: "uppercase", letterSpacing: "0.05em" }}>✗ Skills to develop</h4>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                    {result.missing_skills.map((s, i) => <span key={i} style={{ fontSize: 11, padding: "4px 8px", borderRadius: 4, background: C.redGlow, color: C.red, fontFamily: font, border: `1px solid rgba(239,68,68,0.2)` }}>{s}</span>)}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          <div style={crd}>
+            <h3 style={{ margin: "0 0 12px", fontSize: 14, fontWeight: 600, color: C.text, fontFamily: font }}>Resume rankings</h3>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {result.rankings?.map((r, i) => (
+                <div key={r.id} style={{ display: "flex", alignItems: "flex-start", gap: 14, padding: 14, background: i === 0 ? C.accentGlow : C.surface, borderRadius: 10, border: i === 0 ? `1px solid ${C.borderActive}` : `1px solid ${C.border}` }}>
+                  <ScoreRing score={r.score} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                      <span style={{ fontSize: 13, fontWeight: 600, color: C.text, fontFamily: font }}>{r.label}</span>
+                      {i === 0 && <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 4, background: C.accent, color: "#fff", letterSpacing: "0.05em" }}>BEST FIT</span>}
+                    </div>
+                    {r.strengths?.length > 0 && (
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 4 }}>
+                        {r.strengths.map((s, j) => <span key={j} style={{ fontSize: 11, color: C.green, background: C.greenGlow, padding: "2px 7px", borderRadius: 4, fontFamily: font }}>+ {s}</span>)}
+                      </div>
+                    )}
+                    {r.gaps?.length > 0 && (
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                        {r.gaps.map((g, j) => <span key={j} style={{ fontSize: 11, color: C.amber, background: C.amberGlow, padding: "2px 7px", borderRadius: 4, fontFamily: font }}>− {g}</span>)}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <button onClick={save} style={{ ...pb, background: C.green }}><I.Plus /> Save to tracker</button>
+            <button onClick={genCover} disabled={coverLoading} style={{ ...pb, background: C.purple, opacity: coverLoading ? 0.5 : 1 }}>
+              <I.Sparkle /> {retryStatus && coverLoading ? retryStatus : coverLoading ? "Writing..." : "Generate cover letter"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {result?.error && <div style={{ ...crd, borderColor: C.red }}><p style={{ color: C.red, margin: 0, fontSize: 13, fontFamily: font }}>{result.error}</p></div>}
+
+      {cover && (
+        <div style={crd}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+            <h3 style={{ margin: 0, fontSize: 15, fontWeight: 600, color: C.text, fontFamily: font }}>Cover letter</h3>
+            <button onClick={() => copy(cover)} style={gb}>{copied ? <><I.Check /> Copied</> : <><I.Copy /> Copy</>}</button>
+          </div>
+          <div style={{ whiteSpace: "pre-wrap", fontSize: 13, lineHeight: 1.7, color: C.textMuted, fontFamily: font, background: C.surface, padding: 16, borderRadius: 8, border: `1px solid ${C.border}` }}>{cover}</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ════════════════════════════════════════
+// MODULE 2: TRACKER
+// ════════════════════════════════════════
+function TrackerModule({ apps, onUpdate }) {
+  const [editingId, setEditingId] = useState(null);
+  const [editForm, setEditForm] = useState({ notes: "", hiringManager: "", linkedinUrl: "" });
+  const [filter, setFilter] = useState("all");
+
+  const startEdit = (a) => {
+    setEditingId(a.id);
+    setEditForm({ notes: a.notes || "", hiringManager: a.hiringManager || "", linkedinUrl: a.linkedinUrl || "" });
+  };
+
+  const saveEdit = (id) => {
+    onUpdate(apps.map((a) => a.id === id ? { ...a, ...editForm } : a));
+    setEditingId(null);
+  };
+
+  const setStatus = (id, status) => {
+    onUpdate(apps.map((a) => a.id === id ? { ...a, status, dateApplied: status === "applied" && !a.dateApplied ? new Date().toISOString() : a.dateApplied } : a));
+  };
+
+  const remove = (id) => onUpdate(apps.filter((a) => a.id !== id));
+
+  const filtered = filter === "all" ? apps : apps.filter((a) => a.status === filter);
+  const sorted = [...filtered].sort((a, b) => new Date(b.dateAdded) - new Date(a.dateAdded));
+
+  if (apps.length === 0) return (
+    <div style={{ ...crd, textAlign: "center", padding: "48px 24px" }}>
+      <div style={{ fontSize: 36, marginBottom: 12 }}>💼</div>
+      <h3 style={{ margin: "0 0 8px", fontSize: 16, fontWeight: 600, color: C.text, fontFamily: font }}>No applications tracked yet</h3>
+      <p style={{ margin: 0, fontSize: 13, color: C.textMuted, fontFamily: font }}>Run a match in the <strong>Matcher</strong> tab and save it here to start tracking.</p>
+    </div>
+  );
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+        {["all", "saved", "applied", "interview", "offer", "rejected"].map((f) => (
+          <button key={f} onClick={() => setFilter(f)} style={{
+            ...bb, padding: "6px 12px", fontSize: 11, textTransform: "uppercase", letterSpacing: "0.03em",
+            background: filter === f ? C.accent : C.surface, color: filter === f ? "#fff" : C.textMuted,
+          }}>{f === "all" ? `All (${apps.length})` : `${STATUS_CONFIG[f].label} (${apps.filter((a) => a.status === f).length})`}</button>
+        ))}
+      </div>
+
+      {sorted.map((a) => {
+        const isEd = editingId === a.id;
+        return (
+          <div key={a.id} style={crd}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
+              <div style={{ flex: 1, minWidth: 200 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4, flexWrap: "wrap" }}>
+                  <span style={{ fontSize: 15, fontWeight: 700, color: C.text, fontFamily: font }}>{a.jobTitle}</span>
+                  <StatusBadge status={a.status} />
+                </div>
+                <div style={{ fontSize: 12, color: C.textMuted, fontFamily: font }}>
+                  {a.company}
+                  {a.matchScore != null && <span style={{ marginLeft: 10, color: C.textDim, fontFamily: mono }}>Match: {a.matchScore}</span>}
+                  {a.url && <a href={a.url} target="_blank" rel="noopener noreferrer" style={{ marginLeft: 10, color: C.accent, textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 3 }}>View posting <I.ExtLink /></a>}
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                <select value={a.status} onChange={(e) => setStatus(a.id, e.target.value)} style={{ ...inp, width: "auto", padding: "6px 10px", fontSize: 12 }}>
+                  {Object.keys(STATUS_CONFIG).map((s) => <option key={s} value={s}>{STATUS_CONFIG[s].label}</option>)}
+                </select>
+                <button onClick={() => (isEd ? setEditingId(null) : startEdit(a))} style={gb}><I.Edit /></button>
+                <button onClick={() => remove(a.id)} style={{ ...gb, color: C.red }}><I.Trash /></button>
+              </div>
+            </div>
+
+            {isEd ? (
+              <div style={{ marginTop: 14, paddingTop: 14, borderTop: `1px solid ${C.border}`, display: "flex", flexDirection: "column", gap: 10 }}>
+                <input placeholder="Hiring manager" value={editForm.hiringManager} onChange={(e) => setEditForm({ ...editForm, hiringManager: e.target.value })} style={inp} onFocus={foc} onBlur={blr} />
+                <input placeholder="LinkedIn URL" value={editForm.linkedinUrl} onChange={(e) => setEditForm({ ...editForm, linkedinUrl: e.target.value })} style={inp} onFocus={foc} onBlur={blr} />
+                <textarea placeholder="Notes..." value={editForm.notes} onChange={(e) => setEditForm({ ...editForm, notes: e.target.value })} style={{ ...ta, minHeight: 80 }} onFocus={foc} onBlur={blr} />
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button onClick={() => saveEdit(a.id)} style={pb}><I.Check /> Save</button>
+                  <button onClick={() => setEditingId(null)} style={gb}>Cancel</button>
+                </div>
+              </div>
+            ) : (a.notes || a.hiringManager || a.linkedinUrl) ? (
+              <div style={{ marginTop: 12, paddingTop: 12, borderTop: `1px solid ${C.border}`, fontSize: 12, color: C.textMuted, fontFamily: font, lineHeight: 1.6 }}>
+                {a.hiringManager && <div>Hiring manager: {a.hiringManager}</div>}
+                {a.linkedinUrl && <div>LinkedIn: <a href={a.linkedinUrl} target="_blank" rel="noopener noreferrer" style={{ color: C.accent }}>{a.linkedinUrl}</a></div>}
+                {a.notes && <div style={{ whiteSpace: "pre-wrap", marginTop: 4 }}>{a.notes}</div>}
+              </div>
+            ) : null}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ════════════════════════════════════════
+// MODULE 3: ANALYTICS
+// ════════════════════════════════════════
+function AnalyticsModule({ apps }) {
+  const stats = useMemo(() => {
+    const total = apps.length;
+    const byStatus = {};
+    Object.keys(STATUS_CONFIG).forEach((s) => (byStatus[s] = apps.filter((a) => a.status === s).length));
+    const applied = apps.filter((a) => a.status !== "saved").length;
+    const interviews = byStatus.interview + byStatus.offer;
+    const offers = byStatus.offer;
+    const avgScore = apps.filter((a) => a.matchScore != null).length
+      ? Math.round(apps.filter((a) => a.matchScore != null).reduce((s, a) => s + a.matchScore, 0) / apps.filter((a) => a.matchScore != null).length)
+      : null;
+    const interviewRate = applied > 0 ? Math.round((interviews / applied) * 100) : 0;
+    const offerRate = applied > 0 ? Math.round((offers / applied) * 100) : 0;
+    return { total, byStatus, applied, interviews, offers, avgScore, interviewRate, offerRate };
+  }, [apps]);
+
+  if (apps.length === 0) return (
+    <div style={{ ...crd, textAlign: "center", padding: "48px 24px" }}>
+      <div style={{ fontSize: 36, marginBottom: 12 }}>📊</div>
+      <h3 style={{ margin: "0 0 8px", fontSize: 16, fontWeight: 600, color: C.text, fontFamily: font }}>No data yet</h3>
+      <p style={{ margin: 0, fontSize: 13, color: C.textMuted, fontFamily: font }}>Save applications from the Matcher to see your analytics here.</p>
+    </div>
+  );
+
+  const statCard = (label, value, color = C.text) => (
+    <div style={crd}>
+      <div style={{ fontSize: 11, color: C.textDim, fontFamily: font, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 }}>{label}</div>
+      <div style={{ fontSize: 28, fontWeight: 700, color, fontFamily: mono }}>{value}</div>
+    </div>
+  );
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12 }}>
+        {statCard("Total tracked", stats.total)}
+        {statCard("Applied", stats.applied, C.accent)}
+        {statCard("Interviews", stats.interviews, C.amber)}
+        {statCard("Offers", stats.offers, C.green)}
+        {stats.avgScore != null && statCard("Avg match score", stats.avgScore)}
+        {statCard("Interview rate", `${stats.interviewRate}%`)}
+      </div>
+
+      <div style={crd}>
+        <h3 style={{ margin: "0 0 14px", fontSize: 14, fontWeight: 600, color: C.text, fontFamily: font }}>Pipeline breakdown</h3>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {Object.keys(STATUS_CONFIG).map((s) => {
+            const count = stats.byStatus[s];
+            const pct = stats.total > 0 ? (count / stats.total) * 100 : 0;
+            const cfg = STATUS_CONFIG[s];
+            return (
+              <div key={s}>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                  <span style={{ fontSize: 12, color: C.textMuted, fontFamily: font }}>{cfg.label}</span>
+                  <span style={{ fontSize: 12, color: C.textDim, fontFamily: mono }}>{count}</span>
+                </div>
+                <div style={{ height: 6, background: C.surface, borderRadius: 3, overflow: "hidden" }}>
+                  <div style={{ height: "100%", width: `${pct}%`, background: cfg.color, borderRadius: 3, transition: "width .4s ease" }} />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ════════════════════════════════════════
+// APP SHELL
+// ════════════════════════════════════════
+function App() {
+  const [ready, setReady] = useState(false);
+  const [tab, setTab] = useState("resumes");
+  const [resumes, setResumes] = useState([]);
+  const [apps, setApps] = useState([]);
+  const [apiKey, setApiKey] = useState("");
+  const [showKeyInput, setShowKeyInput] = useState(false);
+  const [keyDraft, setKeyDraft] = useState("");
+
+  useEffect(() => {
+    (async () => {
+      const data = await loadData();
+      if (data) {
+        setResumes(data.resumes || []);
+        setApps(data.apps || []);
+      }
+      const keyRes = await localGet(KEY_SK);
+      if (keyRes?.value) setApiKey(keyRes.value);
+      setReady(true);
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (ready) saveData({ resumes, apps });
+  }, [resumes, apps, ready]);
+
+  const saveKey = async () => {
+    const trimmed = keyDraft.trim();
+    if (!trimmed) return;
+    await localSet(KEY_SK, trimmed);
+    setApiKey(trimmed);
+    setKeyDraft("");
+    setShowKeyInput(false);
+  };
+
+  const clearKey = async () => {
+    await localSet(KEY_SK, "");
+    setApiKey("");
+  };
+
+  const addApp = (app) => {
+    setApps((prev) => [...prev, app]);
+    setTab("tracker");
+  };
+
+  if (!ready) return null;
+
+  return (
+    <div style={{ maxWidth: 1000, margin: "0 auto", padding: "32px 20px 60px" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 12, marginBottom: 28 }}>
+        <div>
+          <h1 style={{ margin: "0 0 4px", fontSize: 26, fontWeight: 700, color: C.text, fontFamily: font, letterSpacing: "-0.02em" }}>Job Search Command Center</h1>
+          <p style={{ margin: 0, fontSize: 13, color: C.textDim, fontFamily: font }}>AI Suitability Analyzer &amp; Pipeline Engine</p>
+        </div>
+        <div style={{ position: "relative" }}>
+          <button onClick={() => { setShowKeyInput((s) => !s); setKeyDraft(apiKey); }} style={{ ...gb, border: `1px solid ${C.border}`, padding: "10px 16px" }}>
+            ⚙️ {apiKey ? "API Key Configured" : "Set API Key"}
+          </button>
+          {showKeyInput && (
+            <div style={{ position: "absolute", right: 0, top: "calc(100% + 8px)", zIndex: 10, width: 320, ...crd, boxShadow: "0 8px 24px rgba(0,0,0,0.4)" }}>
+              <p style={{ margin: "0 0 10px", fontSize: 12, color: C.textMuted, fontFamily: font, lineHeight: 1.6 }}>
+                Paste your Gemini API key. Stored only in this browser's local storage — never sent anywhere except Google's API.
+              </p>
+              <input type="password" placeholder="AIza..." value={keyDraft} onChange={(e) => setKeyDraft(e.target.value)} style={{ ...inp, marginBottom: 10 }} onFocus={foc} onBlur={blr} />
+              <div style={{ display: "flex", gap: 8 }}>
+                <button onClick={saveKey} style={pb}><I.Check /> Save</button>
+                {apiKey && <button onClick={clearKey} style={{ ...gb, color: C.red }}>Clear key</button>}
+                <button onClick={() => setShowKeyInput(false)} style={gb}>Close</button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <TabNav active={tab} onChange={setTab} resumeCount={resumes.length} />
+
+      {tab === "resumes" && <ResumeManager resumes={resumes} onUpdate={setResumes} onGoToMatcher={() => setTab("matcher")} />}
+      {tab === "matcher" && <MatcherModule resumes={resumes} onSaveApp={addApp} apiKey={apiKey} />}
+      {tab === "tracker" && <TrackerModule apps={apps} onUpdate={setApps} />}
+      {tab === "analytics" && <AnalyticsModule apps={apps} />}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>
+
